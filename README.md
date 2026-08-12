@@ -1,16 +1,21 @@
 # MT5 Expert Advisors
 
-Two MetaTrader 5 (MQL5) Expert Advisors:
+Three MetaTrader 5 (MQL5) Expert Advisors:
 
 - **MA Cross EA** — a fast/slow Moving Average crossover trend-follower.
 - **Scalper Multi-Entry EA** — a momentum-burst scalper that opens a
   batch of several small trades at once with a staggered take-profit
   ladder.
+- **Grid Martingale EA** — a single-direction grid that adds
+  progressively larger positions as price moves against it, closing the
+  whole basket together on a profit target. **High risk — read its
+  section below before using it.**
 
 ## Files
 
 - `Experts/MA_Cross_EA.mq5` — MA crossover trend-following EA.
 - `Experts/Scalper_MultiEntry_EA.mq5` — multi-entry momentum scalper EA.
+- `Experts/Grid_Martingale_EA.mq5` — single-direction grid/martingale EA.
 
 ## Installation
 
@@ -95,3 +100,26 @@ small scalp target on some symbols/brokers. Backtest in "every tick
 based on real ticks" mode, verify the take-profit ladder clears your
 broker's real spread + commission, and forward-test on demo before
 using real funds.
+
+## Grid Martingale EA
+
+`Experts/Grid_Martingale_EA.mq5` — always trades one fixed direction
+(`InpGridDirection`, default SELL). When flat, it opens a small first
+position (`InpBaseLot`). Every time price moves `InpGridStepPoints`
+further against the basket, it adds another same-direction position with
+a bigger lot (`InpBaseLot * InpLotMultiplier ^ level`), up to
+`InpMaxGridLevels`. The whole basket closes together once floating
+profit reaches `InpBasketTakeProfitPercent`/`InpBasketTakeProfitUSD`.
+
+**This is a martingale/grid strategy, not scalping, and it is
+meaningfully riskier than the other two EAs here:** individual trades
+have no stop loss, and each added level is larger than the last. Left
+unmanaged, a strong sustained move against the chosen direction can
+exhaust free margin and get positions forcibly liquidated by the broker
+at the worst possible moment. `InpBasketMaxLossPercent` (default 20% of
+balance) closes the entire basket once floating loss reaches that level,
+which the source video this EA is based on did not show doing — it can
+be set to 0 to remove that limit and match the video exactly, but that
+is **not recommended**: it reintroduces unlimited downside. A short
+demo clip of an account growing only shows the times a grid like this
+worked out; it says nothing about the times a similar one did not.
