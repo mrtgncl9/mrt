@@ -1,23 +1,26 @@
-# MA Cross EA
+# MT5 Expert Advisors
 
-A MetaTrader 5 (MQL5) Expert Advisor implementing a fast/slow Moving
-Average crossover strategy, based on the classic "MA crossover" tutorial
-strategy: open a **BUY** when the fast MA crosses above the slow MA, and
-a **SELL** when the fast MA crosses below the slow MA.
+Two MetaTrader 5 (MQL5) Expert Advisors:
 
-## File
+- **MA Cross EA** — a fast/slow Moving Average crossover trend-follower.
+- **Scalper Multi-Entry EA** — a momentum-burst scalper that opens a
+  batch of several small trades at once with a staggered take-profit
+  ladder.
 
-- `Experts/MA_Cross_EA.mq5` — the complete, self-contained Expert Advisor.
+## Files
+
+- `Experts/MA_Cross_EA.mq5` — MA crossover trend-following EA.
+- `Experts/Scalper_MultiEntry_EA.mq5` — multi-entry momentum scalper EA.
 
 ## Installation
 
-1. Copy `Experts/MA_Cross_EA.mq5` into your MetaTrader 5 data folder, under
-   `MQL5/Experts/` (in MetaEditor: `File → Open Data Folder → MQL5 →
-   Experts`).
-2. Open the file in MetaEditor and press **Compile** (F7). It should
+1. Copy the `.mq5` file(s) you want to use into your MetaTrader 5 data
+   folder, under `MQL5/Experts/` (in MetaEditor: `File → Open Data
+   Folder → MQL5 → Experts`).
+2. Open each file in MetaEditor and press **Compile** (F7). It should
    compile with 0 errors and 0 warnings.
-3. In MetaTrader 5, open the **Navigator** panel (Ctrl+N), find
-   `MA_Cross_EA` under **Expert Advisors**, and drag it onto any chart.
+3. In MetaTrader 5, open the **Navigator** panel (Ctrl+N), find the EA
+   under **Expert Advisors**, and drag it onto any chart.
 
 ## Key design points
 
@@ -63,3 +66,32 @@ tolerance.
 
 See the extensive inline comments in `MA_Cross_EA.mq5` for a line-by-line
 explanation of how the code works.
+
+## Scalper Multi-Entry EA
+
+`Experts/Scalper_MultiEntry_EA.mq5` — on a momentum-burst signal (recent
+price move over N bars beyond a threshold, confirmed by a short RSI), it
+opens a **batch of `InpTradesCount` (default 10) trades at
+`InpLotPerTrade` (default 0.02) lots each**, all in the same direction.
+Each trade in the batch gets its own take-profit, spaced further away
+than the previous one (`InpBaseTakeProfitPoints` +
+`InpTakeProfitStepPoints` per trade) — a "ladder" that banks a small
+profit fast on the first trade while later trades aim further. Once any
+trade in the batch has closed in profit, every remaining trade's stop
+loss is moved to break-even. Any trade still open after
+`InpMaxHoldSeconds` is force-closed, and a daily max-loss limit
+(`InpDailyMaxLossUSD`) stops new batches (and optionally closes
+everything) once hit.
+
+**Requires a hedging-enabled MT5 account.** Holding several separate
+positions on one symbol at once is only possible in hedging mode; on a
+netting account a second order on the same symbol just resizes the
+existing position instead of opening a new one. The EA checks this in
+`OnInit()` and refuses to start otherwise.
+
+**No strategy is objectively "the best," and scalping is unusually
+sensitive to spread/commission/slippage** — those costs can exceed a
+small scalp target on some symbols/brokers. Backtest in "every tick
+based on real ticks" mode, verify the take-profit ladder clears your
+broker's real spread + commission, and forward-test on demo before
+using real funds.
