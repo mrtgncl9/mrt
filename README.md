@@ -103,23 +103,45 @@ using real funds.
 
 ## Grid Martingale EA
 
-`Experts/Grid_Martingale_EA.mq5` — always trades one fixed direction
-(`InpGridDirection`, default SELL). When flat, it opens a small first
-position (`InpBaseLot`). Every time price moves `InpGridStepPoints`
-further against the basket, it adds another same-direction position with
-a bigger lot (`InpBaseLot * InpLotMultiplier ^ level`), up to
-`InpMaxGridLevels`. The whole basket closes together once floating
-profit reaches `InpBasketTakeProfitPercent`/`InpBasketTakeProfitUSD`.
+`Experts/Grid_Martingale_EA.mq5` — trades one direction per cycle. When
+flat, it opens a small first position (`InpBaseLot`). Every time price
+moves `InpGridStepPoints` further against the basket, it adds another
+same-direction position with a bigger lot (`InpBaseLot *
+InpLotMultiplier ^ level`), up to `InpMaxGridLevels`. The whole basket
+closes together once floating profit reaches
+`InpBasketTakeProfitPercent`/`InpBasketTakeProfitUSD`.
 
 **This is a martingale/grid strategy, not scalping, and it is
 meaningfully riskier than the other two EAs here:** individual trades
 have no stop loss, and each added level is larger than the last. Left
-unmanaged, a strong sustained move against the chosen direction can
+unmanaged, a strong sustained move against the open direction can
 exhaust free margin and get positions forcibly liquidated by the broker
-at the worst possible moment. `InpBasketMaxLossPercent` (default 20% of
-balance) closes the entire basket once floating loss reaches that level,
-which the source video this EA is based on did not show doing — it can
-be set to 0 to remove that limit and match the video exactly, but that
-is **not recommended**: it reintroduces unlimited downside. A short
-demo clip of an account growing only shows the times a grid like this
-worked out; it says nothing about the times a similar one did not.
+at the worst possible moment.
+
+### v2: fixes found by an actual backtest
+
+A user-supplied backtest (GOLD, 2026.08.03–2026.08.12) of v1 — which
+always sold, no matter what the market was doing — lost 98% of the
+account's balance at its worst point and finished net-negative. v2 fixes
+the two causes:
+
+1. **`InpGridDirection = Auto` (new default).** A new cycle now checks a
+   trend filter MA (`InpTrendTimeframe`/`InpTrendMAPeriod`) and only
+   sells below it, only buys above it, instead of always betting one
+   way. A cycle's direction is locked in from its actual open positions
+   once started, so a mid-cycle trend flip cannot mix BUY and SELL
+   levels in the same basket. `GRID_SELL`/`GRID_BUY` are still available
+   to force a fixed direction.
+2. **A loss floor that cannot shrink.** v1's only loss limit was a
+   percentage of the *current* balance, so repeated losing cycles
+   compounded it down towards zero. v2 uses the tighter of
+   `InpBasketMaxLossPercent` and a new fixed `InpBasketMaxLossUSD` per
+   cycle, plus a new `InpDailyMaxLossUSD` — read live from the account's
+   own trade history — that stops the EA from starting any further
+   cycles once a day's realized loss is already too large.
+
+These reduce the two failure modes actually observed in testing, but
+this is still not a "safe" strategy in an absolute sense — a fast enough
+move against an open basket can still lose more than intended between
+ticks. Backtest with "every tick based on real ticks" and forward-test
+on demo before risking real funds.
