@@ -41,5 +41,25 @@ a **SELL** when the fast MA crosses below the slow MA.
   plain `input` (no arrays, no complex structures), so all of them can be
   optimized directly in the Strategy Tester.
 
+## v2 additions (loss-reduction / risk-management)
+
+- Optional trend filter MA, minimum crossover-distance filter, and max
+  spread filter — fewer, higher-quality signals.
+- Optional ATR-based (volatility-adaptive) stop loss / take profit,
+  falling back to fixed points.
+- Optional percent-of-balance position sizing, falling back to a fixed
+  lot size.
+- Break-even stop move and a trailing stop, so open profit is protected
+  instead of being given back.
+- Daily profit target and daily max-loss "circuit breakers" that stop new
+  trades for the rest of the day once hit — computed live from the
+  account's own trade history (`HistorySelect`/`HistoryDealGet*`), so
+  there is nothing to restore after a restart.
+
+**No EA can guarantee a fixed daily dollar profit.** The daily
+target/loss inputs are a ceiling and a floor, not a promise — size them,
+and `InpRiskPercent`, to match your real account balance and risk
+tolerance.
+
 See the extensive inline comments in `MA_Cross_EA.mq5` for a line-by-line
 explanation of how the code works.
