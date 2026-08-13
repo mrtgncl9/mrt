@@ -149,7 +149,7 @@ input int  NewsMinutesAfter  = 30;
 
 input group "===== Daily / Account Protection ====="
 input double MaxDailyLossPercent      = 2.0;   // % of balance
-input double MaxDailyProfitPercent    = 4.0;   // % of balance
+input double MaxDailyProfitPercent    = 0.0;   // % of balance (0 = off: never lock in gains early, let winners run)
 input double MaxEquityDrawdownPercent = 10.0;  // % from the highest equity ever seen by this EA
 input int    MaxConsecutiveLosses     = 3;
 input int    CooldownAfterLossMinutes = 60;
