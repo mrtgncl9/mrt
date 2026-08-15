@@ -1,6 +1,6 @@
 # MT5 Expert Advisors
 
-Three MetaTrader 5 (MQL5) Expert Advisors:
+MetaTrader 5 (MQL5) Expert Advisors:
 
 - **MA Cross EA** — a fast/slow Moving Average crossover trend-follower.
 - **Scalper Multi-Entry EA** — a momentum-burst scalper that opens a
@@ -10,12 +10,18 @@ Three MetaTrader 5 (MQL5) Expert Advisors:
   progressively larger positions as price moves against it, closing the
   whole basket together on a profit target. **High risk — read its
   section below before using it.**
+- **XAUUSD Scalper Basket EA** — a single-direction basket that adds
+  same-side positions on a tight price grid, with lot size stepped up in
+  tiers as account balance grows. **High risk, no per-trade stop loss —
+  read its section below before using it.**
 
 ## Files
 
 - `Experts/MA_Cross_EA.mq5` — MA crossover trend-following EA.
 - `Experts/Scalper_MultiEntry_EA.mq5` — multi-entry momentum scalper EA.
 - `Experts/Grid_Martingale_EA.mq5` — single-direction grid/martingale EA.
+- `Experts/XAUUSD_Scalper_Basket_EA.mq5` — same-direction basket EA with
+  balance-tiered lot sizing.
 
 ## Installation
 
@@ -145,3 +151,46 @@ this is still not a "safe" strategy in an absolute sense — a fast enough
 move against an open basket can still lose more than intended between
 ticks. Backtest with "every tick based on real ticks" and forward-test
 on demo before risking real funds.
+
+## XAUUSD Scalper Basket EA
+
+`Experts/XAUUSD_Scalper_Basket_EA.mq5` — models the "aynı yön basket +
+basamaklı lot" behavior: each cycle picks one direction (`InpDirMode`:
+M1 EMA9/EMA21 trend + ADX filter, or forced BUY/SELL for testing) and
+opens a small "seed" position. As price moves `InpGridStepPoints`
+further (by default only *against* the basket — `InpAddOnAdverseOnly`),
+another same-direction position is added, up to `InpMaxPositions`.
+Individual positions have **no stop loss or take profit** — the basket
+is managed as a whole, and closes entirely once its combined floating
+profit reaches a target (`InpTargetPerPosUSD` × open position count, or
+a fixed `InpBasketTargetUSD`), after which a short `InpReArmDelaySec`
+pause runs before the next cycle re-evaluates direction.
+
+**Lot size is not fixed — it steps up in tiers as account balance
+grows**, e.g. `InpLotTiers = "630:0.05;990:0.15;1300:0.65"` (balance ≥
+$630 → 0.05 lots, ≥ $990 → 0.15, ≥ $1300 → 0.65). The lot is locked for
+the whole basket (`InpLockLotPerBasket`) and only re-evaluated against
+the current balance when a new cycle starts. `InpLotSizingMode` can
+switch to a linear balance coefficient or a plain fixed lot instead of
+the tier table, and `InpSeedLotSmaller` can open the first position of a
+basket one tier smaller than the additions.
+
+**Requires a hedging-enabled MT5 account** — `OnInit()` refuses to start
+otherwise, since the whole strategy depends on holding many same-symbol
+positions at once. Before every order it checks free margin via
+`OrderCalcMargin()` (skipping silently, not spamming errors, if it would
+not leave `InpMarginBufferPercent` headroom) and backs off quietly on a
+closed market or no-quotes response.
+
+**This is materially riskier than the other EAs here**: positions carry
+no individual stop, the profit target is small relative to the basket's
+unbounded downside, and the balance-tiered lot means the position size
+grows automatically as the account grows — both while winning and while
+losing. `InpUseBasketSL` (per-cycle max loss) and `InpUseDailyGuard`
+(daily max loss, checked against realized + floating P/L) default to
+**on** — do not disable them without understanding the consequence.
+Backtest in "every tick based on real ticks" mode over a long window
+(1–3 months) and forward-test on demo before using real funds; the
+lot-tier ladder (e.g. 0.05 → 0.15 → 0.65) accelerates both directions,
+so a losing streak grows the position size just as fast as a winning
+one does.
