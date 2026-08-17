@@ -16,6 +16,11 @@ Three MetaTrader 5 (MQL5) Expert Advisors:
 - `Experts/MA_Cross_EA.mq5` — MA crossover trend-following EA.
 - `Experts/Scalper_MultiEntry_EA.mq5` — multi-entry momentum scalper EA.
 - `Experts/Grid_Martingale_EA.mq5` — single-direction grid/martingale EA.
+- `Experts/XAUUSD_Basket_Scalper_EA.mq5` — multi-timeframe (M5 trend / M1
+  trigger) basket scalper with a confidence-score dashboard, no
+  martingale. See the section below.
+- `Experts/MERT_UNIVERSAL_EA_V4.mq5` — multi-session opening-range
+  breakout EA (up to three sessions/trades per day).
 
 ## Installation
 
@@ -145,3 +150,46 @@ this is still not a "safe" strategy in an absolute sense — a fast enough
 move against an open basket can still lose more than intended between
 ticks. Backtest with "every tick based on real ticks" and forward-test
 on demo before risking real funds.
+
+## XAUUSD Basket Scalper v1.1: confidence score + live HUD
+
+A follow-up request referenced a TikTok backtest video of a product
+called "PoorToRichEA": **$15 deposit, 1:500 leverage, up to 12 grid
+levels per basket**, compressed into a few minutes of simulated time to
+show the balance jumping from ~$14 to $200+. That combination — a
+near-zero deposit, maximum leverage, and a large same-direction grid —
+is what makes a backtest chart look dramatic; it is not a description
+of a strategy that survives real trading, and `Grid_Martingale_EA.mq5`
+above already documents what actually happened (98% drawdown) the one
+time this repo's own grid EA was pointed at the market without a trend
+filter. That combination was **not** reproduced here.
+
+What *was* worth taking from the video is the idea of a live, readable
+dashboard that shows how strong the current buy/sell signal is, not
+just a plain metric dump. `XAUUSD_Basket_Scalper_EA.mq5` (the
+no-martingale, trend-filtered basket scalper documented above) now
+has:
+
+- **A continuous 0-100 confidence score**, computed separately for BUY
+  and SELL, from the same five checks the entry filter already used
+  (M5 trend alignment, M1 EMA trigger, RSI band, ADX strength, candle
+  body/ATR quality) — each scored by *how strongly* it's met, not just
+  pass/fail, and blended with fixed weights (`ComputeConfidence()` in
+  the code). Optional `MinConfidencePercent` input turns this into an
+  extra entry filter (0 = off, matches the old behavior exactly).
+- **FLOW / MOM readouts**: FLOW is the bull/bear candle balance over
+  the last `FlowMomLookbackBars` M1 bars; MOM is ATR-normalized price
+  displacement over the same window — both refreshed every bar.
+- **A redesigned on-chart HUD**: balance/equity/drawdown, spread/ATR,
+  FLOW/MOM/CONFIDENCE, M5 trend, live entry state (SCANNING/IN
+  BASKET/PAUSED/HALTED), open orders and side, basket and daily P/L,
+  cooldown/ADX/margin, and the exact reason new entries are currently
+  blocked — each line color-coded (green/red/orange) instead of one
+  plain white text block.
+
+None of this changes the underlying risk model: still equal-lot
+baskets (no martingale), still a real broker-side ATR stop on every
+order, still the daily-loss/equity-drawdown/session/news guards
+described above. The confidence score makes the signal's quality
+visible and gives you one more optional, tunable filter — it does not
+promise a specific rate of return, and no EA can.

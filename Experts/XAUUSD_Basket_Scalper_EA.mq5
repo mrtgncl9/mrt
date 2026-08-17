@@ -40,8 +40,24 @@
 // kilit, equity zirvesi) terminal Global Degisken olarak diske
 // yazilir, boylece o sayaclar da restart sonrasi kaybolmaz.
 //+------------------------------------------------------------------+
+// v1.10 EKLEMESI - hizli/dogru buy-sell yakalama + canli HUD
+// -------------------------------------------------------------------
+// Bir referans videosunda "PoorToRichEA" adli bir urun, $15 depozito +
+// 1:500 kaldirac + sepet basina 12 grid seviyesiyle sikistirilmis kisa
+// bir backtest penceresinde bakiyeyi hizla sisiriyordu (klasik pazarlama
+// videosu tarifi: neredeyse sifir depozito + maksimum kaldirac + agresif
+// grid buyuklugu = backtest grafiginde etkileyici ama gercek hesapta
+// surdurulemez risk). O tarifi kopyalamak yerine, videonun asil faydali
+// tarafi alindi: ANLIK olarak sinyalin ne kadar "guclu" oldugunu gosteren
+// bir HUD (video'daki CONFIDENCE / FLOW / MOM / TREND / ENTRY okunumlarina
+// benzer). Bu EA'da bu, GatherSignalRaw() + ComputeConfidence() ile 0-100
+// arasi surekli bir BUY/SELL guven skoruna donusturulur; istege bagli
+// olarak (MinConfidencePercent > 0) ek bir giris filtresi olarak da
+// kullanilabilir. Martingale/grid buyutme YOKTUR - sepet hala sabit
+// BatchOrderCount adet ESIT lotluk emirden olusur, degisen sadece sinyalin
+// ne kadar hizli ve net yakalandiginin goruntulenmesidir.
 #property copyright "Educational Basket Scalper EA"
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -73,6 +89,24 @@ enum ENUM_BASKET_SIDE
    BASKET_NONE = 0,
    BASKET_BUY  = 1,
    BASKET_SELL = 2
+};
+
+//+------------------------------------------------------------------+
+//| Raw closed-bar indicator snapshot shared by EvaluateEntrySignal() |
+//| (boolean gate) and ComputeConfidence() (continuous 0-100 score),  |
+//| so both always look at the exact same numbers.                    |
+//+------------------------------------------------------------------+
+struct SSignalRaw
+{
+   bool   valid;
+   bool   bullTrend, bearTrend;
+   double trendFast, trendSlow;
+   bool   m1TriggerBuy, m1TriggerSell;
+   double rsi;
+   double adx;
+   double atrValue, atrPoints;
+   double body;
+   bool   bullCandle, bearCandle;
 };
 
 //+------------------------------------------------------------------+
@@ -160,6 +194,10 @@ input group "===== Friday Close ====="
 input bool   CloseFriday     = true;
 input string FridayCloseTime = "21:00"; // Server time, HH:MM
 
+input group "===== Confidence / Momentum (display + optional extra filter) ====="
+input double MinConfidencePercent = 0.0;  // Extra filter: require this much BUY/SELL confidence (0-100) to enter. 0 = off (display only)
+input int    FlowMomLookbackBars  = 10;   // M1 closed bars used for the FLOW/MOM dashboard readouts
+
 input group "===== Direction / UI ====="
 input bool AllowBuy      = true;
 input bool AllowSell     = true;
@@ -231,6 +269,16 @@ int OnInit()
    if(StopATRMultiplier <= 0.0)
    {
       Print("XAUUSD_Basket_Scalper_EA: StopATRMultiplier must be greater than zero - every order needs a real emergency stop.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(MinConfidencePercent < 0.0 || MinConfidencePercent > 100.0)
+   {
+      Print("XAUUSD_Basket_Scalper_EA: MinConfidencePercent must be between 0 and 100.");
+      return(INIT_PARAMETERS_INCORRECT);
+   }
+   if(FlowMomLookbackBars < 2)
+   {
+      Print("XAUUSD_Basket_Scalper_EA: FlowMomLookbackBars must be at least 2.");
       return(INIT_PARAMETERS_INCORRECT);
    }
 
@@ -445,16 +493,83 @@ bool PassesExecutionFilters()
 }
 
 //+------------------------------------------------------------------+
-//| Full entry-signal evaluation, using ONLY closed-bar data (index 1 |
-//| and higher) on both M1 and M5 - never the still-forming bar 0, so |
-//| there is no repaint / no lookahead.                                |
+//| Reads every raw closed-bar value the signal logic needs (M5      |
+//| trend EMAs, M1 trigger EMAs, RSI, ADX, ATR, last candle) in one   |
+//| place, using ONLY closed-bar data (index 1 and higher) - never    |
+//| the still-forming bar 0, so there is no repaint / no lookahead.   |
+//| Both EvaluateEntrySignal() (boolean gate) and ComputeConfidence() |
+//| (continuous score, also used by the dashboard) read from this     |
+//| same snapshot so they can never disagree on the underlying data.  |
 //+------------------------------------------------------------------+
-ENUM_BASKET_SIDE EvaluateEntrySignal()
+bool GatherSignalRaw(SSignalRaw &d)
 {
-   // --- effective thresholds per SignalMode -----------------------------
-   double adxThreshold   = MinADX;
-   double rsiBuyMin = RSIBuyMin, rsiBuyMax = RSIBuyMax, rsiSellMin = RSISellMin, rsiSellMax = RSISellMax;
-   double bodyMinRatio   = BodyMinATRRatio;
+   ZeroMemory(d); // ensures every field is a safe 0/false even on an early return below
+
+   double trendFast[], trendSlow[];
+   ArraySetAsSeries(trendFast, true);
+   ArraySetAsSeries(trendSlow, true);
+   if(CopyBuffer(g_trendFastHandle, 0, 1, 1, trendFast) != 1) return(false);
+   if(CopyBuffer(g_trendSlowHandle, 0, 1, 1, trendSlow) != 1) return(false);
+   double m5Close = iClose(_Symbol, PERIOD_M5, 1);
+   if(m5Close <= 0.0) return(false);
+
+   d.trendFast = trendFast[0];
+   d.trendSlow = trendSlow[0];
+   d.bullTrend = (d.trendFast > d.trendSlow) && (m5Close > d.trendFast);
+   d.bearTrend = (d.trendFast < d.trendSlow) && (m5Close < d.trendFast);
+
+   double emaFast[], emaSlow[];
+   ArraySetAsSeries(emaFast, true);
+   ArraySetAsSeries(emaSlow, true);
+   if(CopyBuffer(g_emaFastHandle, 0, 1, 2, emaFast) != 2) return(false);
+   if(CopyBuffer(g_emaSlowHandle, 0, 1, 2, emaSlow) != 2) return(false);
+
+   double open1  = iOpen(_Symbol, PERIOD_M1, 1);
+   double close1 = iClose(_Symbol, PERIOD_M1, 1);
+   double high1  = iHigh(_Symbol, PERIOD_M1, 1);
+   double low1   = iLow(_Symbol, PERIOD_M1, 1);
+   if(open1 <= 0.0 || close1 <= 0.0) return(false);
+
+   bool crossUp      = emaFast[0] > emaSlow[0] && emaFast[1] <= emaSlow[1];
+   bool crossDown    = emaFast[0] < emaSlow[0] && emaFast[1] >= emaSlow[1];
+   bool pullbackUp   = (emaFast[0] > emaSlow[0]) && (low1 <= emaSlow[0])  && (close1 > emaSlow[0]);
+   bool pullbackDown = (emaFast[0] < emaSlow[0]) && (high1 >= emaSlow[0]) && (close1 < emaSlow[0]);
+   d.m1TriggerBuy  = crossUp   || pullbackUp;
+   d.m1TriggerSell = crossDown || pullbackDown;
+
+   double rsiBuf[];
+   ArraySetAsSeries(rsiBuf, true);
+   if(CopyBuffer(g_rsiHandle, 0, 1, 1, rsiBuf) != 1) return(false);
+   d.rsi = rsiBuf[0];
+
+   double adxBuf[];
+   ArraySetAsSeries(adxBuf, true);
+   if(CopyBuffer(g_adxHandle, 0, 1, 1, adxBuf) != 1) return(false);
+   d.adx = adxBuf[0];
+
+   double atrBuf[];
+   ArraySetAsSeries(atrBuf, true);
+   if(CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) != 1) return(false);
+   d.atrValue  = atrBuf[0];
+   d.atrPoints = d.atrValue / _Point;
+
+   d.body       = MathAbs(close1 - open1);
+   d.bullCandle = close1 > open1;
+   d.bearCandle = close1 < open1;
+
+   d.valid = true;
+   return(true);
+}
+
+//+------------------------------------------------------------------+
+//| Applies the active SignalMode preset to the raw input thresholds. |
+//+------------------------------------------------------------------+
+void GetEffectiveThresholds(double &adxThreshold, double &rsiBuyMin, double &rsiBuyMax,
+                             double &rsiSellMin, double &rsiSellMax, double &bodyMinRatio)
+{
+   adxThreshold = MinADX;
+   rsiBuyMin = RSIBuyMin; rsiBuyMax = RSIBuyMax; rsiSellMin = RSISellMin; rsiSellMax = RSISellMax;
+   bodyMinRatio = BodyMinATRRatio;
    if(SignalMode == SIGNAL_SAFE)
    {
       adxThreshold *= 1.3;
@@ -467,79 +582,111 @@ ENUM_BASKET_SIDE EvaluateEntrySignal()
       rsiBuyMin -= 5.0; rsiSellMax += 5.0;
       bodyMinRatio *= 0.7;
    }
+}
 
-   // --- M5 trend filter ---------------------------------------------------
-   double trendFast[], trendSlow[];
-   ArraySetAsSeries(trendFast, true);
-   ArraySetAsSeries(trendSlow, true);
-   if(CopyBuffer(g_trendFastHandle, 0, 1, 1, trendFast) != 1) return(BASKET_NONE);
-   if(CopyBuffer(g_trendSlowHandle, 0, 1, 1, trendSlow) != 1) return(BASKET_NONE);
-   double m5Close = iClose(_Symbol, PERIOD_M5, 1);
-   if(m5Close <= 0.0) return(BASKET_NONE);
+//+------------------------------------------------------------------+
+//| Turns the raw snapshot into a continuous 0-100 BUY confidence and |
+//| a separate 0-100 SELL confidence, plus the FLOW/MOM dashboard     |
+//| readouts. Each of the five underlying checks (trend alignment,    |
+//| M1 trigger, RSI band, ADX strength, candle body quality) is       |
+//| scored on its own 0-100 scale and blended with fixed weights, so  |
+//| the score reflects not just "did every gate pass?" but "by how    |
+//| much" - the same idea as the reference video's live confidence    |
+//| readout, computed transparently instead of as an opaque number.   |
+//+------------------------------------------------------------------+
+void ComputeConfidence(const SSignalRaw &d, const double adxThreshold, const double bodyMinRatio,
+                        double &confBuy, double &confSell, double &momentumPct, double &flowPct)
+{
+   double trendScoreBuy = 0.0, trendScoreSell = 0.0;
+   if(d.atrValue > 0.0)
+   {
+      double distATR = MathAbs(d.trendFast - d.trendSlow) / d.atrValue;
+      double scaled  = MathMin(100.0, distATR * 50.0); // 2 ATR of EMA separation -> 100
+      if(d.bullTrend) trendScoreBuy  = scaled;
+      if(d.bearTrend) trendScoreSell = scaled;
+   }
 
-   bool bullTrend = (trendFast[0] > trendSlow[0]) && (m5Close > trendFast[0]);
-   bool bearTrend = (trendFast[0] < trendSlow[0]) && (m5Close < trendFast[0]);
+   double triggerScoreBuy  = d.m1TriggerBuy  ? 100.0 : 0.0;
+   double triggerScoreSell = d.m1TriggerSell ? 100.0 : 0.0;
 
-   // --- M1 fast/slow EMA (2 closed bars, for the cross AND the pullback) -
-   double emaFast[], emaSlow[];
-   ArraySetAsSeries(emaFast, true);
-   ArraySetAsSeries(emaSlow, true);
-   if(CopyBuffer(g_emaFastHandle, 0, 1, 2, emaFast) != 2) return(BASKET_NONE);
-   if(CopyBuffer(g_emaSlowHandle, 0, 1, 2, emaSlow) != 2) return(BASKET_NONE);
+   double rsiScoreBuy  = MathMin(100.0, MathMax(0.0, d.rsi - 50.0) * 4.0); // 25 pts above midline -> 100
+   double rsiScoreSell = MathMin(100.0, MathMax(0.0, 50.0 - d.rsi) * 4.0);
 
-   double open1  = iOpen(_Symbol, PERIOD_M1, 1);
-   double close1 = iClose(_Symbol, PERIOD_M1, 1);
-   double high1  = iHigh(_Symbol, PERIOD_M1, 1);
-   double low1   = iLow(_Symbol, PERIOD_M1, 1);
-   if(open1 <= 0.0 || close1 <= 0.0) return(BASKET_NONE);
+   double adxScore = (adxThreshold > 0.0) ? MathMin(100.0, (d.adx / adxThreshold) * 50.0) : 50.0;
 
-   bool crossUp   = emaFast[0] > emaSlow[0] && emaFast[1] <= emaSlow[1];
-   bool crossDown = emaFast[0] < emaSlow[0] && emaFast[1] >= emaSlow[1];
-   bool pullbackUp   = (emaFast[0] > emaSlow[0]) && (low1 <= emaSlow[0])  && (close1 > emaSlow[0]);
-   bool pullbackDown = (emaFast[0] < emaSlow[0]) && (high1 >= emaSlow[0]) && (close1 < emaSlow[0]);
+   double bodyScore = 0.0;
+   if(d.atrValue > 0.0 && bodyMinRatio > 0.0)
+      bodyScore = MathMin(100.0, ((d.body / d.atrValue) / bodyMinRatio) * 50.0);
+   double bodyScoreBuy  = d.bullCandle ? bodyScore : 0.0;
+   double bodyScoreSell = d.bearCandle ? bodyScore : 0.0;
 
-   bool m1TriggerBuy  = crossUp   || pullbackUp;
-   bool m1TriggerSell = crossDown || pullbackDown;
+   confBuy  = 0.25 * trendScoreBuy  + 0.20 * triggerScoreBuy  + 0.20 * rsiScoreBuy  + 0.20 * adxScore + 0.15 * bodyScoreBuy;
+   confSell = 0.25 * trendScoreSell + 0.20 * triggerScoreSell + 0.20 * rsiScoreSell + 0.20 * adxScore + 0.15 * bodyScoreSell;
 
-   // --- RSI ----------------------------------------------------------------
-   double rsiBuf[];
-   ArraySetAsSeries(rsiBuf, true);
-   if(CopyBuffer(g_rsiHandle, 0, 1, 1, rsiBuf) != 1) return(BASKET_NONE);
-   double rsi = rsiBuf[0];
-   bool rsiOkBuy  = (rsi >= rsiBuyMin  && rsi <= rsiBuyMax);
-   bool rsiOkSell = (rsi >= rsiSellMin && rsi <= rsiSellMax);
+   int lookback = MathMax(2, FlowMomLookbackBars);
 
-   // --- ADX ------------------------------------------------------------------
-   double adxBuf[];
-   ArraySetAsSeries(adxBuf, true);
-   if(CopyBuffer(g_adxHandle, 0, 1, 1, adxBuf) != 1) return(BASKET_NONE);
-   bool adxOk = (adxBuf[0] >= adxThreshold);
+   // FLOW: directional consistency of the last `lookback` closed M1 candles.
+   int bulls = 0, bears = 0;
+   for(int i = 1; i <= lookback; i++)
+   {
+      double o = iOpen(_Symbol, PERIOD_M1, i);
+      double c = iClose(_Symbol, PERIOD_M1, i);
+      if(c > o) bulls++;
+      else if(c < o) bears++;
+   }
+   flowPct = ((double)(bulls - bears) / (double)lookback) * 100.0;
 
-   // --- ATR: volatility range + candle body/spike filter ----------------
-   double atrBuf[];
-   ArraySetAsSeries(atrBuf, true);
-   if(CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) != 1) return(BASKET_NONE);
-   double atrValue  = atrBuf[0];
-   double atrPoints = atrValue / _Point;
-   bool volOk = (MinATR <= 0 || atrPoints >= MinATR) && (MaxATR <= 0 || atrPoints <= MaxATR);
+   // MOM: ATR-normalized price displacement over the same lookback window -
+   // how many ATRs price has actually travelled, as a percentage.
+   double closeNow  = iClose(_Symbol, PERIOD_M1, 1);
+   double closeThen = iClose(_Symbol, PERIOD_M1, 1 + lookback);
+   momentumPct = (d.atrValue > 0.0 && closeThen > 0.0) ? ((closeNow - closeThen) / d.atrValue) * 100.0 : 0.0;
+}
 
-   double body = MathAbs(close1 - open1);
-   bool bodyOk = (atrValue > 0.0) && (body >= bodyMinRatio * atrValue) && (body <= BodyMaxATRRatio * atrValue);
+//+------------------------------------------------------------------+
+//| Full entry-signal evaluation: boolean gate (unchanged rules) plus |
+//| an optional confidence-based extra filter (MinConfidencePercent). |
+//+------------------------------------------------------------------+
+ENUM_BASKET_SIDE EvaluateEntrySignal()
+{
+   double adxThreshold, rsiBuyMin, rsiBuyMax, rsiSellMin, rsiSellMax, bodyMinRatio;
+   GetEffectiveThresholds(adxThreshold, rsiBuyMin, rsiBuyMax, rsiSellMin, rsiSellMax, bodyMinRatio);
 
-   bool bullCandle = close1 > open1;
-   bool bearCandle = close1 < open1;
+   SSignalRaw d;
+   if(!GatherSignalRaw(d))
+      return(BASKET_NONE);
 
+   bool volOk = (MinATR <= 0 || d.atrPoints >= MinATR) && (MaxATR <= 0 || d.atrPoints <= MaxATR);
    if(!volOk)  { g_blockedReason = "ATR outside allowed range"; return(BASKET_NONE); }
-   if(!adxOk)  { g_blockedReason = "ADX below minimum";         return(BASKET_NONE); }
-   if(!bodyOk) { g_blockedReason = "Candle body/spike filter";  return(BASKET_NONE); }
+   if(d.adx < adxThreshold) { g_blockedReason = "ADX below minimum"; return(BASKET_NONE); }
 
-   bool buyOk  = bullTrend && m1TriggerBuy  && rsiOkBuy  && bullCandle;
-   bool sellOk = bearTrend && m1TriggerSell && rsiOkSell && bearCandle;
+   bool bodyOk = (d.atrValue > 0.0) && (d.body >= bodyMinRatio * d.atrValue) && (d.body <= BodyMaxATRRatio * d.atrValue);
+   if(!bodyOk) { g_blockedReason = "Candle body/spike filter"; return(BASKET_NONE); }
+
+   bool rsiOkBuy  = (d.rsi >= rsiBuyMin  && d.rsi <= rsiBuyMax);
+   bool rsiOkSell = (d.rsi >= rsiSellMin && d.rsi <= rsiSellMax);
+
+   bool buyOk  = d.bullTrend && d.m1TriggerBuy  && rsiOkBuy  && d.bullCandle;
+   bool sellOk = d.bearTrend && d.m1TriggerSell && rsiOkSell && d.bearCandle;
+
+   if(!buyOk && !sellOk)
+   { g_blockedReason = "Trend/EMA/RSI conditions not aligned"; return(BASKET_NONE); }
+
+   if(MinConfidencePercent > 0.0)
+   {
+      double confBuy, confSell, momentumPct, flowPct;
+      ComputeConfidence(d, adxThreshold, bodyMinRatio, confBuy, confSell, momentumPct, flowPct);
+      if(buyOk && confBuy < MinConfidencePercent)
+      { g_blockedReason = StringFormat("BUY confidence %.0f%% below minimum %.0f%%", confBuy, MinConfidencePercent); buyOk = false; }
+      if(sellOk && confSell < MinConfidencePercent)
+      { g_blockedReason = StringFormat("SELL confidence %.0f%% below minimum %.0f%%", confSell, MinConfidencePercent); sellOk = false; }
+   }
 
    if(buyOk)  return(BASKET_BUY);
    if(sellOk) return(BASKET_SELL);
 
-   g_blockedReason = "Trend/EMA/RSI conditions not aligned";
+   if(g_blockedReason == "")
+      g_blockedReason = "Confidence filter";
    return(BASKET_NONE);
 }
 
@@ -1096,29 +1243,65 @@ bool IsNewsBlackout()
 }
 
 //+------------------------------------------------------------------+
-//| DASHBOARD (simple top-left multi-line label)                      |
+//| DASHBOARD - colored multi-row HUD (title/status pill + one        |
+//| labelled, color-coded row per metric: balance/equity, spread,     |
+//| FLOW/MOM/CONFIDENCE, trend, entry state, orders, P/L, cooldown).   |
+//| Every object shares the DASHBOARD_NAME prefix so it can be wiped   |
+//| in one call (ObjectsDeleteAll) on OnDeinit - nothing to leak.      |
 //+------------------------------------------------------------------+
-#define DASHBOARD_NAME "XAUUSDBasketEA_Panel"
+#define DASHBOARD_NAME "XAUUSDBasketEA_"
+#define DASH_ROW_COUNT  13
+#define DASH_ROW_HEIGHT 16
+#define DASH_TOP_Y      34
+#define DASH_WIDTH      276
 
 void CreateDashboard()
 {
-   if(ObjectFind(0, DASHBOARD_NAME) < 0)
-      ObjectCreate(0, DASHBOARD_NAME, OBJ_LABEL, 0, 0, 0);
+   string bg = DASHBOARD_NAME + "BG";
+   if(ObjectFind(0, bg) < 0)
+      ObjectCreate(0, bg, OBJ_RECTANGLE_LABEL, 0, 0, 0);
 
-   ObjectSetInteger(0, DASHBOARD_NAME, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, DASHBOARD_NAME, OBJPROP_XDISTANCE, 12);
-   ObjectSetInteger(0, DASHBOARD_NAME, OBJPROP_YDISTANCE, 16);
-   ObjectSetInteger(0, DASHBOARD_NAME, OBJPROP_FONTSIZE, 9);
-   ObjectSetString(0, DASHBOARD_NAME, OBJPROP_FONT, "Consolas");
-   ObjectSetInteger(0, DASHBOARD_NAME, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, DASHBOARD_NAME, OBJPROP_BACK, false);
-   ObjectSetInteger(0, DASHBOARD_NAME, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, bg, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, 8);
+   ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, 12);
+   ObjectSetInteger(0, bg, OBJPROP_XSIZE, DASH_WIDTH);
+   ObjectSetInteger(0, bg, OBJPROP_YSIZE, DASH_TOP_Y + DASH_ROW_COUNT * DASH_ROW_HEIGHT + 8);
+   ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'12,16,22');
+   ObjectSetInteger(0, bg, OBJPROP_COLOR, clrDimGray);
+   ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, bg, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, bg, OBJPROP_BACK, false);
+   ObjectSetInteger(0, bg, OBJPROP_SELECTABLE, false);
+
+   SetDashLabel("TITLE", -1, "XAUUSD FAST SIGNAL SCALPER", clrWhite, 10);
 }
 
 void RemoveDashboard()
 {
-   if(ObjectFind(0, DASHBOARD_NAME) >= 0)
-      ObjectDelete(0, DASHBOARD_NAME);
+   ObjectsDeleteAll(0, DASHBOARD_NAME);
+}
+
+//+------------------------------------------------------------------+
+//| Creates (once) or updates the text/color of one dashboard row.    |
+//| row = -1 is the title row (fixed position above row 0).           |
+//+------------------------------------------------------------------+
+void SetDashLabel(const string suffix, const int row, const string text, const color clr, const int fontSize = 9)
+{
+   string name = DASHBOARD_NAME + suffix;
+   if(ObjectFind(0, name) < 0)
+   {
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 18);
+      ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   }
+   int y = (row < 0) ? 16 : DASH_TOP_Y + row * DASH_ROW_HEIGHT;
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
 }
 
 void UpdateDashboard()
@@ -1129,44 +1312,71 @@ void UpdateDashboard()
    ENUM_BASKET_SIDE side = BASKET_NONE;
    GetBasketStats(count, totalLots, weightedPrice, totalProfit, perOrderLot, earliestOpen, side);
 
-   double atrBuf[]; ArraySetAsSeries(atrBuf, true);
-   double atrValue = (CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) == 1) ? atrBuf[0] : 0.0;
-   double adxBuf[]; ArraySetAsSeries(adxBuf, true);
-   double adxValue = (CopyBuffer(g_adxHandle, 0, 1, 1, adxBuf) == 1) ? adxBuf[0] : 0.0;
+   SSignalRaw d;
+   bool haveRaw = GatherSignalRaw(d);
+   double adxThreshold, rsiBuyMin, rsiBuyMax, rsiSellMin, rsiSellMax, bodyMinRatio;
+   GetEffectiveThresholds(adxThreshold, rsiBuyMin, rsiBuyMax, rsiSellMin, rsiSellMax, bodyMinRatio);
 
-   long spreadPoints = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   double confBuy = 0.0, confSell = 0.0, momentumPct = 0.0, flowPct = 0.0;
+   if(haveRaw)
+      ComputeConfidence(d, adxThreshold, bodyMinRatio, confBuy, confSell, momentumPct, flowPct);
 
-   double trendFast[], trendSlow[];
-   ArraySetAsSeries(trendFast, true); ArraySetAsSeries(trendSlow, true);
-   string trendTxt = "n/a";
-   if(CopyBuffer(g_trendFastHandle, 0, 1, 1, trendFast) == 1 && CopyBuffer(g_trendSlowHandle, 0, 1, 1, trendSlow) == 1)
-      trendTxt = (trendFast[0] > trendSlow[0]) ? "BULLISH" : "BEARISH";
+   long   spreadPoints = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   double balance      = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity       = AccountInfoDouble(ACCOUNT_EQUITY);
+   double peakEquity   = GlobalVariableCheck(GV_PEAKEQUITY) ? GlobalVariableGet(GV_PEAKEQUITY) : equity;
+   double ddPct         = (peakEquity > 0.0) ? (peakEquity - equity) / peakEquity * 100.0 : 0.0;
+   double marginLevel  = AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
+
+   bool   equityStopped = IsEquityStopTriggered();
+   string status = equityStopped ? "EQUITY STOP" : (count > 0 ? "IN BASKET" : "WATCHING");
+   color  statusClr = equityStopped ? clrRed : (count > 0 ? clrLime : clrDodgerBlue);
+   SetDashLabel("STATUS", 0, StringFormat("STATUS      %s", status), statusClr);
+
+   SetDashLabel("BALANCE", 1, StringFormat("BALANCE     $%.2f", balance), clrWhite);
+   SetDashLabel("EQUITY", 2, StringFormat("EQUITY      $%.2f  (DD %.1f%%)", equity, ddPct),
+                (ddPct >= MaxEquityDrawdownPercent * 0.5 && MaxEquityDrawdownPercent > 0.0) ? clrOrange : clrLime);
+
+   SetDashLabel("SPREADATR", 3, StringFormat("SPREAD %3d pts   ATR %.2f", (int)spreadPoints, d.atrValue), clrSilver);
+
+   color flowClr = (flowPct >= 0.0) ? clrLime : clrTomato;
+   SetDashLabel("FLOWMOM", 4, StringFormat("FLOW %+4.0f%%      MOM %+4.0f%%", flowPct, momentumPct), flowClr);
+
+   double bestConf = MathMax(confBuy, confSell);
+   color  confClr  = (bestConf >= 66.0) ? clrLime : (bestConf >= 33.0) ? clrYellow : clrGray;
+   SetDashLabel("CONFIDENCE", 5, StringFormat("CONFIDENCE  BUY %3.0f%%  SELL %3.0f%%", confBuy, confSell), confClr);
+
+   string trendTxt = haveRaw ? (d.bullTrend ? "BULLISH" : d.bearTrend ? "BEARISH" : "NEUTRAL") : "n/a";
+   color  trendClr = haveRaw ? (d.bullTrend ? clrLime : d.bearTrend ? clrTomato : clrGray) : clrGray;
+   SetDashLabel("TREND", 6, StringFormat("TREND (M5)  %s", trendTxt), trendClr);
+
+   // "SCANNING" means the EA is actively looking for a fresh basket (no hard block active) - it does not
+   // guarantee a trade this bar, just that nothing is currently preventing one when a valid signal appears.
+   bool hardBlocked = (g_blockedReason == "Equity stop active" || g_blockedReason == "Cooldown bars after last close" ||
+                        g_blockedReason == "Cooldown after consecutive losses" || g_blockedReason == "Friday close window" ||
+                        g_blockedReason == "Outside session hours" || g_blockedReason == "Margin level too low" ||
+                        g_blockedReason == "Daily max loss reached" || g_blockedReason == "Daily profit target reached" ||
+                        g_blockedReason == "Max daily baskets reached" || g_blockedReason == "News blackout window");
+   string entryTxt = equityStopped ? "HALTED" : (count > 0 ? "IN BASKET" : (hardBlocked ? "PAUSED" : "SCANNING"));
+   color  entryClr = equityStopped ? clrRed : (count > 0 ? clrLime : (hardBlocked ? clrOrange : clrDodgerBlue));
+   SetDashLabel("ENTRY", 7, StringFormat("ENTRY       %s", entryTxt), entryClr);
 
    string sideTxt = (side == BASKET_BUY) ? "BUY" : (side == BASKET_SELL) ? "SELL" : "-";
+   color  sideClr = (side == BASKET_BUY) ? clrLime : (side == BASKET_SELL) ? clrTomato : clrSilver;
+   SetDashLabel("ORDERS", 8, StringFormat("ORDERS %d/%d   POS %s %.2f lot", count, MaxPositions, sideTxt, totalLots), sideClr);
 
-   string status = IsEquityStopTriggered() ? "EQUITY STOP" : (count > 0 ? "IN BASKET" : "WATCHING");
+   SetDashLabel("BASKETPL", 9, StringFormat("BASKET P/L  %+.2f", totalProfit), (totalProfit >= 0.0) ? clrLime : clrTomato);
 
-   string text = StringFormat(
-      "XAUUSD Basket Scalper\n"
-      "Status........: %s\n"
-      "Signal mode...: %s\n"
-      "M5 trend......: %s\n"
-      "Spread........: %d pts\n"
-      "ATR / ADX.....: %.2f / %.1f\n"
-      "Positions.....: %d (%s)\n"
-      "Total lot.....: %.2f\n"
-      "Basket P/L....: %.2f\n"
-      "Daily P/L.....: %.2f\n"
-      "Daily baskets.: %d/%d\n"
-      "Loss lock.....: %s\n"
-      "Blocked by....: %s",
-      status, EnumToString(SignalMode), trendTxt, (int)spreadPoints, atrValue, adxValue,
-      count, sideTxt, totalLots, totalProfit, GetTodayRealizedProfit(),
-      GetDailyBasketCount(), MaxDailyBaskets,
-      IsPaused() ? "ACTIVE" : "clear",
-      (count == 0 && g_blockedReason != "") ? g_blockedReason : "-"
-   );
+   double dailyProfit = GetTodayRealizedProfit();
+   SetDashLabel("DAILY", 10, StringFormat("DAILY P/L   %+.2f   BASKETS %d/%d", dailyProfit, GetDailyBasketCount(), MaxDailyBaskets),
+                (dailyProfit >= 0.0) ? clrLime : clrTomato);
 
-   ObjectSetString(0, DASHBOARD_NAME, OBJPROP_TEXT, text);
+   bool cooldownActive = IsPaused() || !IsWithinCooldownBars();
+   SetDashLabel("COOLDOWN", 11, StringFormat("COOLDOWN %s  ADX %.1f  MARGIN %.0f%%",
+                cooldownActive ? "active" : "clear ", d.adx, marginLevel),
+                cooldownActive ? clrOrange : clrGray);
+
+   string blockedTxt = (count == 0 && g_blockedReason != "") ? g_blockedReason : "-";
+   SetDashLabel("BLOCKED", 12, StringFormat("BLOCKED BY  %s", blockedTxt), (blockedTxt == "-") ? clrGray : clrOrange);
 }
 //+------------------------------------------------------------------+
