@@ -18,13 +18,18 @@
 //
 // STRATEJI OZETI
 // ---------------
-// Her tur icin tek bir yon secilir (InpDirMode). O yonde ilk ("seed")
-// pozisyon acilir; fiyat InpGridStepPoints kadar hareket ettikce ayni
-// yonde yeni pozisyonlar eklenir (basket/grid). Sepetin lotu tur boyunca
-// kilitlenebilir (InpLockLotPerBasket) ve hesap bakiyesine gore
-// basamakli olarak buyur (InpLotTiers). Sepetin TOPLAM floating kari bir
-// hedefe ulasinca TUM pozisyonlar birlikte kapatilir, kisa bir bekleme
-// (InpReArmDelaySec) sonrasi yeni bir tur icin yon yeniden degerlendirilir.
+// Her tur icin tek bir yon secilir (InpDirMode). O yonde InpBatchCount kadar
+// pozisyon AYNI ANDA acilir (varsayilan 1 = tek "seed" pozisyon; orn. 10
+// yaparsan hizli bir giris patlamasi olur). Sonrasinda, InpMaxPositions'a
+// ulasilmadiysa, fiyat InpGridStepPoints kadar hareket ettikce ayni yonde
+// EK pozisyonlar da eklenebilir (basket/grid) - InpBatchCount ile
+// InpMaxPositions esitse ek grid adimi hic devreye girmez, sepet sadece
+// batch'ten olusur. Sepetin lotu tur boyunca kilitlenebilir
+// (InpLockLotPerBasket) ve hesap bakiyesine gore basamakli olarak buyur
+// (InpLotTiers) ya da InpLotSizingMode=FIXED ile sabit tutulur. Sepetin
+// TOPLAM floating kari bir hedefe ulasinca TUM pozisyonlar birlikte
+// kapatilir, kisa bir bekleme (InpReArmDelaySec) sonrasi yeni bir tur
+// icin yon yeniden degerlendirilir.
 //+------------------------------------------------------------------+
 #property copyright "Educational Scalper Basket EA"
 #property version   "1.00"
@@ -83,8 +88,9 @@ input bool    InpLockLotPerBasket  = true;   // true: sepet acikken lot sabit ka
 input bool    InpSeedLotSmaller    = false;  // true: sepetin ilk pozisyonu bir kademe kucuk acilir (eklemeler tam kademede)
 
 input group "===== Sepet / Grid ====="
-input int  InpGridStepPoints        = 100;  // Yeni pozisyon ekleme adimi, points cinsinden (XAUUSD point genelde 0.01$ ise 100pt=1.00$; 3-30pt ~ 0.03-0.30$ icin kucult)
-input int  InpMaxPositions          = 20;   // Sepette olabilecek maksimum ayni-yon pozisyon sayisi
+input int  InpBatchCount            = 1;    // Yeni sepet acilirken AYNI ANDA acilacak pozisyon sayisi (1 = eski davranis: tek seed + grid ile buyur; >1 = hizli batch giris)
+input int  InpGridStepPoints        = 100;  // Batch'ten SONRA ek pozisyon icin adim, points (XAUUSD point genelde 0.01$ ise 100pt=1.00$; 3-30pt ~ 0.03-0.30$ icin kucult)
+input int  InpMaxPositions          = 20;   // Sepette olabilecek maksimum ayni-yon pozisyon sayisi (InpBatchCount'tan kucuk olamaz)
 input bool InpAddOnAdverseOnly      = true; // true: sadece fiyat aleyhe giderken ekle; false: her adimda (lehte de) ekle
 input int  InpMinSecondsBetweenAdds = 5;    // Eklemeler arasi minimum saniye
 
@@ -164,6 +170,10 @@ int OnInit()
    { Print("Scalper_Basket_EA: InpGridStepPoints 0'dan buyuk olmali."); return(INIT_PARAMETERS_INCORRECT); }
    if(InpMaxPositions < 1)
    { Print("Scalper_Basket_EA: InpMaxPositions en az 1 olmali."); return(INIT_PARAMETERS_INCORRECT); }
+   if(InpBatchCount < 1)
+   { Print("Scalper_Basket_EA: InpBatchCount en az 1 olmali."); return(INIT_PARAMETERS_INCORRECT); }
+   if(InpBatchCount > InpMaxPositions)
+   { Print("Scalper_Basket_EA: InpBatchCount, InpMaxPositions'tan buyuk olamaz."); return(INIT_PARAMETERS_INCORRECT); }
    if(InpMinSecondsBetweenAdds < 0)
    { Print("Scalper_Basket_EA: InpMinSecondsBetweenAdds negatif olamaz."); return(INIT_PARAMETERS_INCORRECT); }
    if(InpTargetPerPosUSD <= 0.0 && InpBasketTargetUSD <= 0.0)
@@ -356,7 +366,9 @@ void ManageBasket()
 }
 
 //+------------------------------------------------------------------+
-//| Bos iken yeni bir tur (yon + seed pozisyon) baslatmayi dener.      |
+//| Bos iken yeni bir tur baslatmayi dener: yon + InpBatchCount kadar |
+//| pozisyonu AYNI ANDA (art arda, tek dongude) acar. InpBatchCount=1 |
+//| ise eski davranis (tek seed pozisyon, sonrasi grid ile buyur).    |
 //+------------------------------------------------------------------+
 void TryOpenNewBasket()
 {
@@ -376,7 +388,8 @@ void TryOpenNewBasket()
    { if(g_blockedReason == "") g_blockedReason = "yon sinyali yok"; return; }
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double lot = InpSeedLotSmaller ? ComputeSeedLot(balance) : ComputeLotForBalance(balance);
+   bool useSmallerSeed = (InpBatchCount <= 1 && InpSeedLotSmaller);
+   double lot = useSmallerSeed ? ComputeSeedLot(balance) : ComputeLotForBalance(balance);
    lot = NormalizeLot(lot);
    if(lot <= 0.0)
    { g_blockedReason = "lot hesaplanamadi"; return; }
@@ -385,14 +398,26 @@ void TryOpenNewBasket()
    if(!HasEnoughMargin(isBuy, lot))
    { g_blockedReason = "serbest teminat yetersiz"; return; }
 
-   if(OpenOnePosition(isBuy, lot, "seed"))
+   int filled = 0;
+   for(int i = 0; i < InpBatchCount; i++)
    {
-      double fullLot = ComputeLotForBalance(balance);
-      GlobalVariableSet(GV_LOCKEDLOT, NormalizeLot(fullLot));
-      if(InpDebug)
-         PrintFormat("Scalper_Basket_EA: yeni sepet acildi | %s seed_lot=%.2f kilitli_lot=%.2f bakiye=%.2f",
-                     isBuy ? "BUY" : "SELL", lot, NormalizeLot(fullLot), balance);
+      if(i > 0 && !HasEnoughMargin(isBuy, lot))
+         break; // teminat batch ortasinda tukendi - acilanla devam, gerisini zorlama
+
+      if(!OpenOnePosition(isBuy, lot, "batch"))
+         break; // market kapali / reddedildi - tekrar denemeye zorlama
+
+      filled++;
    }
+
+   if(filled == 0)
+   { if(g_blockedReason == "") g_blockedReason = "emir gonderilemedi"; return; }
+
+   double fullLot = useSmallerSeed ? ComputeLotForBalance(balance) : lot;
+   GlobalVariableSet(GV_LOCKEDLOT, NormalizeLot(fullLot));
+   if(InpDebug)
+      PrintFormat("Scalper_Basket_EA: yeni sepet acildi | %s %d/%d pozisyon lot=%.2f kilitli_lot=%.2f bakiye=%.2f",
+                  isBuy ? "BUY" : "SELL", filled, InpBatchCount, lot, NormalizeLot(fullLot), balance);
 }
 
 //+------------------------------------------------------------------+

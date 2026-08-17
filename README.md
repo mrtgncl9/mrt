@@ -157,14 +157,21 @@ on demo before risking real funds.
 `Experts/XAUUSD_Scalper_Basket_EA.mq5` — models the "aynı yön basket +
 basamaklı lot" behavior: each cycle picks one direction (`InpDirMode`:
 M1 EMA9/EMA21 trend + ADX filter, or forced BUY/SELL for testing) and
-opens a small "seed" position. As price moves `InpGridStepPoints`
-further (by default only *against* the basket — `InpAddOnAdverseOnly`),
-another same-direction position is added, up to `InpMaxPositions`.
-Individual positions have **no stop loss or take profit** — the basket
-is managed as a whole, and closes entirely once its combined floating
-profit reaches a target (`InpTargetPerPosUSD` × open position count, or
-a fixed `InpBasketTargetUSD`), after which a short `InpReArmDelaySec`
-pause runs before the next cycle re-evaluates direction.
+opens `InpBatchCount` positions **at once** (default 1 = the original
+single "seed" position; set it higher, e.g. 10, for a fast simultaneous
+burst entry). If `InpMaxPositions` is larger than `InpBatchCount`, price
+moving `InpGridStepPoints` further (by default only *against* the
+basket — `InpAddOnAdverseOnly`) adds further same-direction positions on
+top of the batch, up to `InpMaxPositions`; set them equal to open the
+batch and never grid-add beyond it. Individual positions have **no stop
+loss or take profit** — the basket is managed as a whole, and closes
+entirely once its combined floating profit reaches a target
+(`InpTargetPerPosUSD` × open position count, or a fixed
+`InpBasketTargetUSD`), after which a short `InpReArmDelaySec` pause runs
+before the next cycle re-evaluates direction. A small
+`InpTargetPerPosUSD` relative to the batch's combined lot means the
+whole batch can close within seconds of a small favorable move — the
+"hızlı al çık" (fast in-and-out) behavior.
 
 **Lot size is not fixed — it steps up in tiers as account balance
 grows**, e.g. `InpLotTiers = "630:0.05;990:0.15;1300:0.65"` (balance ≥
