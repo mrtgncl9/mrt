@@ -156,7 +156,10 @@ on demo before risking real funds.
 
 `Experts/XAUUSD_Scalper_Basket_EA.mq5` — models the "aynı yön basket +
 basamaklı lot" behavior: each cycle picks one direction (`InpDirMode`:
-M1 EMA9/EMA21 trend + ADX filter, or forced BUY/SELL for testing) and
+M1 EMA9/EMA21 trend + ADX filter, optionally also requiring the last
+closed M1 candle to close in the same direction — `InpRequireCandleConfirm`,
+default on, to avoid entering just as the trend is turning; or forced
+BUY/SELL for testing) and
 opens `InpBatchCount` positions **at once** (default 1 = the original
 single "seed" position; set it higher, e.g. 10, for a fast simultaneous
 burst entry). If `InpMaxPositions` is larger than `InpBatchCount`, price

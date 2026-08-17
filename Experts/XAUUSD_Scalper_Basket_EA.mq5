@@ -76,6 +76,7 @@ input int            InpEMAFastPeriod = 9;         // M1 hizli EMA periyodu
 input int            InpEMASlowPeriod = 21;        // M1 yavas EMA periyodu
 input int            InpADXPeriod     = 14;        // M1 ADX periyodu
 input double         InpADXThreshold  = 20.0;      // Bu esigin altinda yon sinyali verilmez
+input bool           InpRequireCandleConfirm = true; // true: trend yonune EK olarak son KAPALI M1 mumu da ayni yonde kapanmis olmali (gec/yaniltici sinyalleri azaltir)
 
 input group "===== Basamakli Lot (bakiyeye gore) ====="
 input ENUM_LOT_SIZING_MODE InpLotSizingMode = LOT_SIZING_TIERS;               // Lot hesaplama modu
@@ -463,7 +464,10 @@ void TryAddToBasket(const int count, const ENUM_BASKET_SIDE side, const datetime
 //+------------------------------------------------------------------+
 //| Yon secimi: DIR_BUY_ONLY / DIR_SELL_ONLY sabit, DIR_M1_EMA icin    |
 //| EMA9/EMA21 trend yonu + ADX minimum esigi (kapali M1 bari uzerinden|
-//| - repaint/lookahead yok).                                          |
+//| - repaint/lookahead yok). InpRequireCandleConfirm=true ise, trend  |
+//| zaten donmeye baslamisken gec kalinan girisleri elemek icin son    |
+//| KAPALI M1 mumunun da trendle AYNI yonde kapanmis olmasi sart       |
+//| kosulur (orn. EMA hala yukari ama son mum kirmizi -> BUY verilmez).|
 //+------------------------------------------------------------------+
 ENUM_BASKET_SIDE EvaluateDirection()
 {
@@ -485,11 +489,28 @@ ENUM_BASKET_SIDE EvaluateDirection()
    if(adx[0] < InpADXThreshold)
    { g_blockedReason = "ADX esik altinda"; return(BASKET_NONE); }
 
-   if(emaFast[0] > emaSlow[0]) return(BASKET_BUY);
-   if(emaFast[0] < emaSlow[0]) return(BASKET_SELL);
+   bool trendUp   = emaFast[0] > emaSlow[0];
+   bool trendDown = emaFast[0] < emaSlow[0];
+   if(!trendUp && !trendDown)
+   { g_blockedReason = "EMA'lar esit - yon yok"; return(BASKET_NONE); }
 
-   g_blockedReason = "EMA'lar esit - yon yok";
-   return(BASKET_NONE);
+   if(InpRequireCandleConfirm)
+   {
+      double open1  = iOpen(g_symbol, PERIOD_M1, 1);
+      double close1 = iClose(g_symbol, PERIOD_M1, 1);
+      if(open1 <= 0.0 || close1 <= 0.0)
+      { g_blockedReason = "mum verisi alinamadi"; return(BASKET_NONE); }
+
+      bool bullCandle = close1 > open1;
+      bool bearCandle = close1 < open1;
+
+      if(trendUp && !bullCandle)
+      { g_blockedReason = "trend yukari ama son mum onaylamadi"; return(BASKET_NONE); }
+      if(trendDown && !bearCandle)
+      { g_blockedReason = "trend asagi ama son mum onaylamadi"; return(BASKET_NONE); }
+   }
+
+   return(trendUp ? BASKET_BUY : BASKET_SELL); // buraya kadar geldiyse ikisinden biri kesin dogru
 }
 
 bool IsHandleReady(const int handle)
