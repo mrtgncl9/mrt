@@ -1,14 +1,14 @@
 //+------------------------------------------------------------------+
-//|                       XAUUSD_Straddle_Breakout_EA_v1.2.mq5       |
+//|                       XAUUSD_Straddle_Breakout_EA_v1.3.mq5       |
 //|         Buy Stop + Sell Stop Straddle Breakout "Gap" Bot         |
 //+------------------------------------------------------------------+
 //
-// SURUM: 1.2 - Bu, "Scalper Basket" ailesinden TAMAMEN AYRI bir EA.
+// SURUM: 1.3 - Bu, "Scalper Basket" ailesinden TAMAMEN AYRI bir EA.
 // Kendi surum sirasi var (v1.0, v1.1, ...), Basket EA'nin v1.x'i ile
 // KARISTIRILMAMALI - iki farkli strateji, iki farkli dosya ailesi.
 //
 // v1.1: mantikta degisiklik yok, sadece tek-dosya teslimat.
-// v1.2: GERCEK MANTIK DUZELTMESI - kullanicinin backtest'i (200$
+// v1.2: GERCEK MANTIK DUZELTMESI - kisa pencereli backtest (200$
 // baslangic, GOLD M1, 2026.08.12) net -148.59 (%74.30 dususu) verdi;
 // kazanma orani iyiydi (%67.38) ama ortalama kayip (-4.28$) ortalama
 // kazancin (1.68$) ~2.5 kati buyuktu. Sebep: trailing SABIT point
@@ -16,8 +16,16 @@
 // degisiyordu (orn. 265pt) - kazananlar SL mesafesinin cok altinda
 // erken kesiliyor, kaybedenler tam SL'e kadar gidiyordu. Duzeltme:
 // trailing artik pozisyonun KENDI baslangic SL mesafesine ORANTILI
-// (InpTrailStartRiskMult / InpTrailStepRiskMult), sabit InpTrailStartPoints/
-// InpTrailStepPoints kaldirildi. Detay icin ApplyTrailing() yorumuna bak.
+// (InpTrailStartRiskMult / InpTrailStepRiskMult).
+// v1.3: v1.2'nin AYNI ayarlarla ~1 aylik uzun pencerede test edilmesi,
+// kisa pencerenin iyimserliginin buyuk olcude gurultu oldugunu ortaya
+// cikardi - Kar Faktoru 0.95'ten 0.83'e, kazanma orani %46.7'den
+// %43.1'e geriledi, maksimum dusus %79.37'ye ulasti. Log incelemesi,
+// kayiplarin buyuk kisminin piyasa YATAY/SIKISIKKEN acilan straddle'larin
+// iki yonu de yanlis kirilimla (whipsaw) yemesinden geldigini gosterdi.
+// Eklenen InpUseVolatilityFilter, guncel ATR kendi InpVolAvgPeriod'luk
+// ortalamasinin altindaysa yeni straddle acilmasini engeller - bu bir
+// HIPOTEZ, kesin cozum degil, tekrar uzun pencerede dogrulanmali.
 //
 // KULLANIM NOTU (once oku)
 // -------------------------
@@ -45,7 +53,7 @@
 // iptal edilip guncel fiyata yeniden ortalanir (stale straddle onlenir).
 //+------------------------------------------------------------------+
 #property copyright "Educational Straddle Breakout EA"
-#property version   "1.2"
+#property version   "1.3"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -65,6 +73,11 @@ input int    InpGapPoints            = 150;   // Fiyattan Buy/Sell Stop'a mesafe
 input int    InpMaxPendingAgeSec     = 180;   // Bu sureden eski bekleyen emir cifti iptal edilip yeniden kurulur (0 = kapali)
 input int    InpRefreshDriftPoints   = 300;   // Fiyat, straddle merkezinden bu kadar uzaklasirsa yeniden kurulur (0 = kapali)
 input int    InpReArmDelaySec        = 2;     // Pozisyon kapandiktan sonra yeni straddle icin bekleme (saniye)
+
+input group "===== Volatilite Filtresi (v1.3) ====="
+input bool   InpUseVolatilityFilter = true;  // true: piyasa kendi ortalamasina gore SIKISIKKEN yeni straddle acma (whipsaw azaltir)
+input int    InpVolAvgPeriod        = 50;    // Ortalama ATR'nin hesaplandigi bar sayisi
+input double InpVolMinRatio         = 1.0;   // Guncel ATR >= (ortalama ATR * bu oran) olmali, yoksa straddle acilmaz
 
 input group "===== Stop Loss / Take Profit / Trailing ====="
 input bool             InpUseATRStopLoss = true;        // true: SL mesafesi ATR'ye gore degisken; false: sabit InpFixedSLPoints
@@ -129,8 +142,10 @@ int OnInit()
    { Print("Straddle_EA: InpTrailStartRiskMult ve InpTrailStepRiskMult 0'dan buyuk olmali."); return(INIT_PARAMETERS_INCORRECT); }
    if(InpUseTrailing && InpTrailStepRiskMult >= InpTrailStartRiskMult)
    { Print("Straddle_EA: InpTrailStepRiskMult, InpTrailStartRiskMult'tan kucuk olmali (yoksa trailing baslar baslamaz SL'i orijinal SL'den de yakina ceker)."); return(INIT_PARAMETERS_INCORRECT); }
+   if(InpUseVolatilityFilter && (InpVolAvgPeriod < 2 || InpVolMinRatio <= 0.0))
+   { Print("Straddle_EA: InpVolAvgPeriod en az 2, InpVolMinRatio 0'dan buyuk olmali."); return(INIT_PARAMETERS_INCORRECT); }
 
-   if(InpUseATRStopLoss)
+   if(InpUseATRStopLoss || InpUseVolatilityFilter) // volatilite filtresi de ayni ATR handle'ini kullanir
    {
       g_atrHandle = iATR(g_symbol, InpATRTimeframe, InpATRPeriod);
       if(g_atrHandle == INVALID_HANDLE)
@@ -268,6 +283,9 @@ void PlaceStraddle()
    if(InpMaxSpreadPoints > 0 && CurrentSpreadPoints() > InpMaxSpreadPoints)
    { g_blockedReason = "spread cok genis"; return; }
 
+   if(!VolatilityFilterPasses())
+   { g_blockedReason = "volatilite dusuk (piyasa sikisik)"; return; }
+
    double slDistPoints = CalcSLDistancePoints();
    if(slDistPoints <= 0.0)
    { g_blockedReason = "SL mesafesi hesaplanamadi"; return; }
@@ -342,6 +360,36 @@ bool IsHandleReady(const int handle)
 {
    if(handle == INVALID_HANDLE) return(false);
    return(BarsCalculated(handle) > 1);
+}
+
+//+------------------------------------------------------------------+
+//| v1.3: uzun pencereli backtest, kisa pencerede gorulmeyen bir zayif |
+//| nokta ortaya cikardi - piyasa YATAY/SIKISIKKEN acilan straddle'lar |
+//| genelde iki yonu de yanlis kirilimla (whipsaw) yiyor. Bu filtre,   |
+//| guncel ATR kendi InpVolAvgPeriod barlik ortalamasinin altindaysa   |
+//| (piyasa sakinse) yeni straddle acilmasini engeller. HIPOTEZ olarak |
+//| eklendi - kesin cozum degil, tekrar uzun pencerede test edilmeli.  |
+//+------------------------------------------------------------------+
+bool VolatilityFilterPasses()
+{
+   if(!InpUseVolatilityFilter) return(true);
+   if(InpVolAvgPeriod < 2) return(true);
+   if(!IsHandleReady(g_atrHandle)) return(false);
+   if(BarsCalculated(g_atrHandle) < InpVolAvgPeriod + 1) return(false);
+
+   double atrBuf[];
+   ArraySetAsSeries(atrBuf, true);
+   if(CopyBuffer(g_atrHandle, 0, 1, InpVolAvgPeriod, atrBuf) != InpVolAvgPeriod)
+      return(false);
+
+   double current = atrBuf[0];
+   double sum = 0.0;
+   for(int i = 0; i < InpVolAvgPeriod; i++)
+      sum += atrBuf[i];
+   double avg = sum / InpVolAvgPeriod;
+   if(avg <= 0.0) return(false);
+
+   return(current >= avg * InpVolMinRatio);
 }
 
 //+------------------------------------------------------------------+

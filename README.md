@@ -27,7 +27,7 @@ MetaTrader 5 (MQL5) Expert Advisors:
 - `Experts/Grid_Martingale_EA.mq5` — single-direction grid/martingale EA.
 - `Experts/XAUUSD_Scalper_Basket_EA_v1.2.mq5` — same-direction basket EA with
   balance-tiered lot sizing.
-- `Experts/XAUUSD_Straddle_Breakout_EA_v1.2.mq5` — Buy Stop/Sell Stop
+- `Experts/XAUUSD_Straddle_Breakout_EA_v1.3.mq5` — Buy Stop/Sell Stop
   straddle breakout EA, single position at a time.
 
 ## Installation
@@ -241,7 +241,7 @@ size instead of contradicting it.
 
 ## XAUUSD Straddle Breakout EA
 
-`Experts/XAUUSD_Straddle_Breakout_EA_v1.2.mq5` — reverse-engineered from
+`Experts/XAUUSD_Straddle_Breakout_EA_v1.3.mq5` — reverse-engineered from
 a user-supplied video of a bot ("StraddleGap") that grew a demo account
 from ~$680 to ~$1930 over about 28 hours. Unlike the basket EA above,
 this one holds **one small fixed-lot position at a time**: while flat,
@@ -295,3 +295,20 @@ of each position's *own* initial SL distance (captured once at open
 and held fixed for that trade's lifetime), so trailing always scales
 to the risk actually taken on that specific trade instead of a
 constant that can drift out of proportion to it.
+
+### v1.3: longer backtest showed the v1.2 result was mostly noise
+
+The same v1.2 settings, re-run over a ~1-month window instead of the
+original ~10-day one, got *worse*, not better: profit factor 0.95 → 0.83,
+win rate 46.73% → 43.13%, max drawdown 52.82% → 79.37%, an 11-trade
+losing streak (-$59.86). The short-window near-breakeven result was
+favorable noise, not a real edge. Log review pointed to a specific
+failure mode: many straddles were opened while price was ranging
+sideways, and both the Buy Stop and Sell Stop ends up getting hit by
+whipsaw within a tight range instead of a genuine breakout.
+`InpUseVolatilityFilter` (default on) addresses this by only allowing
+a new straddle when the current ATR is at or above its own
+`InpVolAvgPeriod`-bar average (`InpVolMinRatio`) — i.e., skip placing
+new straddles while the market is quiet/ranging. **This is a
+hypothesis, not a verified fix** — it needs the same long-window
+backtest treatment before it can be trusted.
