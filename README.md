@@ -194,3 +194,30 @@ Backtest in "every tick based on real ticks" mode over a long window
 lot-tier ladder (e.g. 0.05 → 0.15 → 0.65) accelerates both directions,
 so a losing streak grows the position size just as fast as a winning
 one does.
+
+### v1.10: fixed a self-defeating default combination found by backtest
+
+A backtest reported every single cycle closing at a loss, never once
+reaching the profit target. Cause: on a typical Strategy Tester deposit
+(≥ $1300), the default `InpLotTiers` immediately selects its largest
+tier (0.65 lots), where a $1 XAUUSD move is worth ~$65 — but the old
+defaults (`InpBasketMaxLossUSD = 20`, `InpTargetPerPosUSD = 0.5`) were
+sized for a much smaller lot. At 0.65 lots the basket stop-loss was
+smaller than the spread cost of opening a single position, so it
+triggered essentially immediately, before the basket had any realistic
+chance to reach its profit target. Fixed two ways:
+
+1. **New defaults** (`InpBasketMaxLossUSD = 200`, `InpTargetPerPosUSD =
+   2.0`, `InpDailyMaxLossUSD = 400`) sized to be workable with the
+   largest tier in the default `InpLotTiers` table.
+2. **`OnInit()` now refuses to start** if `InpBasketMaxLossUSD` is
+   smaller than the USD cost of one `InpGridStepPoints` move at the
+   largest configured lot (largest `InpLotTiers` entry, or
+   `InpFixedLot`) — this combination can never produce a winning cycle,
+   so it is caught as a parameter error instead of silently losing
+   money. `LOT_SIZING_LINEAR` mode is exempt since its lot grows
+   unbounded with balance by design.
+
+This does not make the strategy safe — it only ensures the configured
+risk/reward numbers are internally consistent with the configured lot
+size instead of contradicting it.

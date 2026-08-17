@@ -89,7 +89,7 @@ input bool InpAddOnAdverseOnly      = true; // true: sadece fiyat aleyhe giderke
 input int  InpMinSecondsBetweenAdds = 5;    // Eklemeler arasi minimum saniye
 
 input group "===== Sepet Kapatma ====="
-input double InpTargetPerPosUSD = 0.5;  // Sepet hedefi = acik pozisyon sayisi x bu deger (USD)
+input double InpTargetPerPosUSD = 2.0;  // Sepet hedefi = acik pozisyon sayisi x bu deger (USD) - lot kademesine gore olcekle (bkz. asagidaki not)
 input double InpBasketTargetUSD = 0.0;  // >0 ise sabit toplam USD hedefi kullanilir (InpTargetPerPosUSD'yi ezer)
 input bool   InpUseTrailing     = false; // Sepet karini kilitleyen trailing
 input double InpTrailStartUSD   = 3.0;   // Trailing bu floating kardan itibaren baslar
@@ -97,10 +97,15 @@ input double InpTrailStepUSD    = 1.0;   // Zirveden bu kadar geri cekilirse sep
 input int    InpReArmDelaySec   = 5;     // Sepet kapandiktan sonra yeni tur icin bekleme (saniye)
 
 input group "===== Risk Korumalari ====="
+// NOT: InpBasketMaxLossUSD ve InpTargetPerPosUSD, InpLotTiers/InpFixedLot'taki EN BUYUK lot
+// ile tutarli olmali. Orn. 0.65 lot XAUUSD'de 1$'lik fiyat hareketi ~65$ demektir; kucuk bir
+// zarar limiti (eskiden varsayilan 20$) bu lotta ilk pozisyon daha grid'e eklenemeden, sadece
+// spread yuzunden aninda tetiklenir ve sepet HICBIR ZAMAN kar hedefine ulasamaz. OnInit() bu
+// tutarsizligi InpUseBasketSL acikken otomatik tespit edip baslatmayi reddeder.
 input bool   InpUseBasketSL       = true;  // Sepet toplam zarari bu degeri asarsa TUMUNU kapat
-input double InpBasketMaxLossUSD  = 20.0;  // Sepet zarar limiti (USD)
+input double InpBasketMaxLossUSD  = 200.0; // Sepet zarar limiti (USD) - en buyuk lot kademesiyle tutarli olmali
 input bool   InpUseDailyGuard     = true;  // Gunluk zarar limiti (gerceklesen + floating)
-input double InpDailyMaxLossUSD   = 50.0;  // Gunluk zarar limiti (USD) - asilinca o gun icin tum yeni turlar durur
+input double InpDailyMaxLossUSD   = 400.0; // Gunluk zarar limiti (USD) - asilinca o gun icin tum yeni turlar durur
 input double InpMarginBufferPercent = 20.0; // Serbest teminat, gereken teminatin bu kadar fazlasi olmali
 input int    InpMaxSpreadPoints   = 0;      // 0 = kapali; >0 ise bu spreadin uzerinde yeni/eklenen emir gonderilmez
 
@@ -180,6 +185,40 @@ int OnInit()
    {
       if(InpFixedLot <= 0.0)
       { Print("Scalper_Basket_EA: InpFixedLot 0'dan buyuk olmali."); return(INIT_PARAMETERS_INCORRECT); }
+   }
+
+   // En buyuk configured lot (TIERS -> en ust kademe, FIXED -> InpFixedLot; LINEAR bakiyeyle
+   // sinirsiz buyudugu icin bu kontrolden muaf tutulur, kullanici zaten dokumantasyonda uyarilir)
+   // ile InpBasketMaxLossUSD/InpTargetPerPosUSD tutarli mi diye kontrol et. Tutarsizsa (zarar
+   // limiti tek bir grid adimindan bile kucukse) sepet HICBIR ZAMAN kar hedefine ulasamadan,
+   // ilk pozisyon acilir acilmaz spread + kucuk bir gurultuyle SL'e carpar - bu net bir ayar
+   // hatasidir, "stratejinin dogal riski" degil, bu yuzden EA'yi baslatmadan once yakalanir.
+   double maxConfiguredLot = 0.0;
+   if(InpLotSizingMode == LOT_SIZING_TIERS)
+   {
+      for(int i = 0; i < ArraySize(g_tiers); i++)
+         maxConfiguredLot = MathMax(maxConfiguredLot, g_tiers[i].lot);
+   }
+   else if(InpLotSizingMode == LOT_SIZING_FIXED)
+   {
+      maxConfiguredLot = InpFixedLot;
+   }
+
+   if(InpUseBasketSL && maxConfiguredLot > 0.0)
+   {
+      double moneyPerGridStep = CalcMoneyPerPoint(maxConfiguredLot) * InpGridStepPoints;
+      if(moneyPerGridStep > 0.0 && InpBasketMaxLossUSD < moneyPerGridStep)
+      {
+         PrintFormat("Scalper_Basket_EA: AYAR HATASI - en buyuk lot kademesi (%.2f lot) ile "
+                     "InpGridStepPoints (%d pt) kadar TEK bir aleyhe hareket ~%.2f USD zarar demek, "
+                     "ama InpBasketMaxLossUSD sadece %.2f USD. Sepet SL'i ilk pozisyon grid'e "
+                     "eklenemeden (spread + kucuk bir hareketle) aninda tetiklenir - hicbir tur kar "
+                     "hedefine ulasamaz. InpBasketMaxLossUSD'yi en az %.2f USD'ye cikarin ya da bu "
+                     "lot kademesini kucultun.",
+                     maxConfiguredLot, InpGridStepPoints, moneyPerGridStep, InpBasketMaxLossUSD,
+                     moneyPerGridStep * 3.0);
+         return(INIT_PARAMETERS_INCORRECT);
+      }
    }
 
    if(InpEMAFastPeriod <= 0 || InpEMASlowPeriod <= 0 || InpEMAFastPeriod >= InpEMASlowPeriod)
@@ -517,6 +556,24 @@ double ComputeSeedLot(const double balance)
    int idx = GetTierIndex(balance);
    if(idx <= 0) return(ComputeLotForBalance(balance));
    return(g_tiers[idx - 1].lot);
+}
+
+//+------------------------------------------------------------------+
+//| Verilen lot icin 1 point'lik fiyat hareketinin gercek USD          |
+//| karsiligi (OrderCalcProfit uzerinden, kontrat buyuklugu/quote      |
+//| para birimi donusumu dahil) - OnInit() tutarlilik kontrolunde ve   |
+//| ihtiyac halinde baska yerlerde kullanilir. Fiyat okunamazsa 0.     |
+//+------------------------------------------------------------------+
+double CalcMoneyPerPoint(const double lot)
+{
+   double price = SymbolInfoDouble(g_symbol, SYMBOL_BID);
+   double point = SymbolInfoDouble(g_symbol, SYMBOL_POINT);
+   if(price <= 0.0 || point <= 0.0 || lot <= 0.0) return(0.0);
+
+   double profit = 0.0;
+   if(!OrderCalcProfit(ORDER_TYPE_BUY, g_symbol, lot, price, price + point, profit))
+      return(0.0);
+   return(MathAbs(profit));
 }
 
 //+------------------------------------------------------------------+
