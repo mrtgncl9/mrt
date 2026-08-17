@@ -27,7 +27,7 @@ MetaTrader 5 (MQL5) Expert Advisors:
 - `Experts/Grid_Martingale_EA.mq5` — single-direction grid/martingale EA.
 - `Experts/XAUUSD_Scalper_Basket_EA_v1.2.mq5` — same-direction basket EA with
   balance-tiered lot sizing.
-- `Experts/XAUUSD_Straddle_Breakout_EA_v1.0.mq5` — Buy Stop/Sell Stop
+- `Experts/XAUUSD_Straddle_Breakout_EA_v1.1.mq5` — Buy Stop/Sell Stop
   straddle breakout EA, single position at a time.
 
 ## Installation
@@ -241,7 +241,7 @@ size instead of contradicting it.
 
 ## XAUUSD Straddle Breakout EA
 
-`Experts/XAUUSD_Straddle_Breakout_EA_v1.0.mq5` — reverse-engineered from
+`Experts/XAUUSD_Straddle_Breakout_EA_v1.1.mq5` — reverse-engineered from
 a user-supplied video of a bot ("StraddleGap") that grew a demo account
 from ~$680 to ~$1930 over about 28 hours. Unlike the basket EA above,
 this one holds **one small fixed-lot position at a time**: while flat,

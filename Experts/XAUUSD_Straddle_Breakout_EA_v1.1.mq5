@@ -1,11 +1,15 @@
 //+------------------------------------------------------------------+
-//|                       XAUUSD_Straddle_Breakout_EA_v1.0.mq5       |
+//|                       XAUUSD_Straddle_Breakout_EA_v1.1.mq5       |
 //|         Buy Stop + Sell Stop Straddle Breakout "Gap" Bot         |
 //+------------------------------------------------------------------+
 //
-// SURUM: 1.0 - Bu, "Scalper Basket" ailesinden TAMAMEN AYRI bir EA.
+// SURUM: 1.1 - Bu, "Scalper Basket" ailesinden TAMAMEN AYRI bir EA.
 // Kendi surum sirasi var (v1.0, v1.1, ...), Basket EA'nin v1.x'i ile
 // KARISTIRILMAMALI - iki farkli strateji, iki farkli dosya ailesi.
+// v1.1: mantikta degisiklik yok - varsayilan input degerleri zaten
+// v1.0'in .set dosyasiyla ayniydi, bu surum onu TEK dosyada, ekstra
+// .set yuklemeye gerek kalmadan teslim eder (dosya adi teslimat
+// kuralina gore artirildi).
 //
 // KULLANIM NOTU (once oku)
 // -------------------------
@@ -33,7 +37,7 @@
 // iptal edilip guncel fiyata yeniden ortalanir (stale straddle onlenir).
 //+------------------------------------------------------------------+
 #property copyright "Educational Straddle Breakout EA"
-#property version   "1.0"
+#property version   "1.1"
 #property strict
 
 #include <Trade\Trade.mqh>
