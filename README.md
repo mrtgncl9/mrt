@@ -14,6 +14,11 @@ MetaTrader 5 (MQL5) Expert Advisors:
   same-side positions on a tight price grid, with lot size stepped up in
   tiers as account balance grows. **High risk, no per-trade stop loss —
   read its section below before using it.**
+- **XAUUSD Straddle Breakout EA** — places a Buy Stop + Sell Stop pair
+  around price and rides whichever way it breaks out, one small
+  fixed-lot position at a time, each with a real (ATR-adaptive) stop
+  loss. A separate EA family from the basket EA above, with its own
+  version sequence (v1.x).
 
 ## Files
 
@@ -22,6 +27,8 @@ MetaTrader 5 (MQL5) Expert Advisors:
 - `Experts/Grid_Martingale_EA.mq5` — single-direction grid/martingale EA.
 - `Experts/XAUUSD_Scalper_Basket_EA_v1.2.mq5` — same-direction basket EA with
   balance-tiered lot sizing.
+- `Experts/XAUUSD_Straddle_Breakout_EA_v1.0.mq5` — Buy Stop/Sell Stop
+  straddle breakout EA, single position at a time.
 
 ## Installation
 
@@ -231,3 +238,41 @@ chance to reach its profit target. Fixed two ways:
 This does not make the strategy safe — it only ensures the configured
 risk/reward numbers are internally consistent with the configured lot
 size instead of contradicting it.
+
+## XAUUSD Straddle Breakout EA
+
+`Experts/XAUUSD_Straddle_Breakout_EA_v1.0.mq5` — reverse-engineered from
+a user-supplied video of a bot ("StraddleGap") that grew a demo account
+from ~$680 to ~$1930 over about 28 hours. Unlike the basket EA above,
+this one holds **one small fixed-lot position at a time**: while flat,
+it places a Buy Stop above price and a Sell Stop below (`InpGapPoints`
+apart), each carrying its own real, broker-side stop loss. Whichever
+side the market breaks toward triggers into a position; the still-
+pending order on the other side is deleted immediately (OCO). If
+neither side triggers before `InpMaxPendingAgeSec` or price drifts more
+than `InpRefreshDriftPoints` from the straddle's center, both pending
+orders are cancelled and replaced centered on the current price, so the
+straddle doesn't go stale far from the market. After a position closes,
+`InpReArmDelaySec` later a fresh straddle is placed.
+
+**Stop loss distance is ATR-adaptive by default** (`InpUseATRStopLoss`,
+`InpATRMultiplier` × ATR in points), not fixed — the source video showed
+the SL distance changing from trade to trade, consistent with a
+volatility-based stop rather than a constant point value.
+`InpUseTrailing` (default on) lets winners run by trailing the stop
+once a position is `InpTrailStartPoints` in profit.
+
+**This is a separate EA from the basket EA and has its own version
+sequence** (v1.0, v1.1, ...) — don't confuse the two when both are
+present. Because it only ever holds one position, it does **not**
+require a hedging account (unlike the basket EA).
+
+**Important caveat: the exact gap distance, SL multiplier, and trailing
+parameters from the source video could not be read precisely** (the
+video only showed them at a few blurry moments) — the defaults here
+(`InpGapPoints=150`, `InpATRMultiplier=2.0`, `InpTrailStartPoints=150`,
+`InpTrailStepPoints=80`) are reasonable starting estimates, not a
+verified reproduction of the video's exact behavior. Calibrate them in
+the Strategy Tester against real tick data before trusting any
+performance number, and treat the video's ~180% account growth as
+anecdotal, not a result this configuration is proven to reproduce.
