@@ -1,7 +1,13 @@
 //+------------------------------------------------------------------+
-//|                                XAUUSD_Scalper_Basket_EA.mq5      |
+//|                             XAUUSD_Scalper_Basket_EA_v1.2.mq5    |
 //|        Same-Direction Basket + Balance-Tiered Lot "Scalper"      |
 //+------------------------------------------------------------------+
+//
+// SURUM: 1.2 - dosya adindaki surum numarasi ile #property version asagida
+// HER ZAMAN ESIT TUTULACAK. Yeni bir degisiklik yapildiginda hem dosya adi
+// (orn. _v1.3.mq5) hem de asagidaki #property version birlikte artirilir,
+// eski surum dosyasi silinmez/degistirilmez - boylece hangi kopyanin hangi
+// davranisa ait oldugu dosya adindan belli olur.
 //
 // KULLANIM NOTU (once oku)
 // -------------------------
@@ -32,7 +38,7 @@
 // icin yon yeniden degerlendirilir.
 //+------------------------------------------------------------------+
 #property copyright "Educational Scalper Basket EA"
-#property version   "1.00"
+#property version   "1.2"
 #property strict
 
 #include <Trade\Trade.mqh>

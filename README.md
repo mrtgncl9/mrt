@@ -20,7 +20,7 @@ MetaTrader 5 (MQL5) Expert Advisors:
 - `Experts/MA_Cross_EA.mq5` — MA crossover trend-following EA.
 - `Experts/Scalper_MultiEntry_EA.mq5` — multi-entry momentum scalper EA.
 - `Experts/Grid_Martingale_EA.mq5` — single-direction grid/martingale EA.
-- `Experts/XAUUSD_Scalper_Basket_EA.mq5` — same-direction basket EA with
+- `Experts/XAUUSD_Scalper_Basket_EA_v1.2.mq5` — same-direction basket EA with
   balance-tiered lot sizing.
 
 ## Installation
@@ -154,7 +154,7 @@ on demo before risking real funds.
 
 ## XAUUSD Scalper Basket EA
 
-`Experts/XAUUSD_Scalper_Basket_EA.mq5` — models the "aynı yön basket +
+`Experts/XAUUSD_Scalper_Basket_EA_v1.2.mq5` — models the "aynı yön basket +
 basamaklı lot" behavior: each cycle picks one direction (`InpDirMode`:
 M1 EMA9/EMA21 trend + ADX filter, optionally also requiring the last
 closed M1 candle to close in the same direction — `InpRequireCandleConfirm`,
