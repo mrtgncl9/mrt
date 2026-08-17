@@ -1,15 +1,23 @@
 //+------------------------------------------------------------------+
-//|                       XAUUSD_Straddle_Breakout_EA_v1.1.mq5       |
+//|                       XAUUSD_Straddle_Breakout_EA_v1.2.mq5       |
 //|         Buy Stop + Sell Stop Straddle Breakout "Gap" Bot         |
 //+------------------------------------------------------------------+
 //
-// SURUM: 1.1 - Bu, "Scalper Basket" ailesinden TAMAMEN AYRI bir EA.
+// SURUM: 1.2 - Bu, "Scalper Basket" ailesinden TAMAMEN AYRI bir EA.
 // Kendi surum sirasi var (v1.0, v1.1, ...), Basket EA'nin v1.x'i ile
 // KARISTIRILMAMALI - iki farkli strateji, iki farkli dosya ailesi.
-// v1.1: mantikta degisiklik yok - varsayilan input degerleri zaten
-// v1.0'in .set dosyasiyla ayniydi, bu surum onu TEK dosyada, ekstra
-// .set yuklemeye gerek kalmadan teslim eder (dosya adi teslimat
-// kuralina gore artirildi).
+//
+// v1.1: mantikta degisiklik yok, sadece tek-dosya teslimat.
+// v1.2: GERCEK MANTIK DUZELTMESI - kullanicinin backtest'i (200$
+// baslangic, GOLD M1, 2026.08.12) net -148.59 (%74.30 dususu) verdi;
+// kazanma orani iyiydi (%67.38) ama ortalama kayip (-4.28$) ortalama
+// kazancin (1.68$) ~2.5 kati buyuktu. Sebep: trailing SABIT point
+// (150pt baslat / 80pt takip) kullaniyordu, ama SL mesafesi ATR'ye gore
+// degisiyordu (orn. 265pt) - kazananlar SL mesafesinin cok altinda
+// erken kesiliyor, kaybedenler tam SL'e kadar gidiyordu. Duzeltme:
+// trailing artik pozisyonun KENDI baslangic SL mesafesine ORANTILI
+// (InpTrailStartRiskMult / InpTrailStepRiskMult), sabit InpTrailStartPoints/
+// InpTrailStepPoints kaldirildi. Detay icin ApplyTrailing() yorumuna bak.
 //
 // KULLANIM NOTU (once oku)
 // -------------------------
@@ -37,7 +45,7 @@
 // iptal edilip guncel fiyata yeniden ortalanir (stale straddle onlenir).
 //+------------------------------------------------------------------+
 #property copyright "Educational Straddle Breakout EA"
-#property version   "1.1"
+#property version   "1.2"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -67,8 +75,8 @@ input int               InpFixedSLPoints  = 300;         // InpUseATRStopLoss=fa
 input bool              InpUseTP          = false;       // true: sabit take-profit de ekle
 input int               InpTPPoints       = 600;         // InpUseTP=true ise TP mesafesi, points
 input bool              InpUseTrailing    = true;        // true: pozisyon kar ettikce SL'i pesinden surukle
-input int               InpTrailStartPoints = 150;       // Trailing bu kadar puan kardan itibaren baslar
-input int               InpTrailStepPoints  = 80;        // SL, fiyatin bu kadar gerisinde tutulur
+input double            InpTrailStartRiskMult = 1.0;     // Trailing, pozisyonun KENDI baslangic SL mesafesinin bu katini kadar kardan itibaren baslar
+input double            InpTrailStepRiskMult  = 0.6;     // SL, fiyatin KENDI baslangic SL mesafesinin bu kati kadar gerisinde tutulur
 
 input group "===== Risk Korumalari ====="
 input double InpMarginBufferPercent = 20.0; // Serbest teminat, gereken teminatin bu kadar fazlasi olmali
@@ -117,6 +125,10 @@ int OnInit()
    { Print("Straddle_EA: InpReArmDelaySec negatif olamaz."); return(INIT_PARAMETERS_INCORRECT); }
    if(InpMarginBufferPercent < 0.0)
    { Print("Straddle_EA: InpMarginBufferPercent negatif olamaz."); return(INIT_PARAMETERS_INCORRECT); }
+   if(InpUseTrailing && (InpTrailStartRiskMult <= 0.0 || InpTrailStepRiskMult <= 0.0))
+   { Print("Straddle_EA: InpTrailStartRiskMult ve InpTrailStepRiskMult 0'dan buyuk olmali."); return(INIT_PARAMETERS_INCORRECT); }
+   if(InpUseTrailing && InpTrailStepRiskMult >= InpTrailStartRiskMult)
+   { Print("Straddle_EA: InpTrailStepRiskMult, InpTrailStartRiskMult'tan kucuk olmali (yoksa trailing baslar baslamaz SL'i orijinal SL'den de yakina ceker)."); return(INIT_PARAMETERS_INCORRECT); }
 
    if(InpUseATRStopLoss)
    {
@@ -161,6 +173,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
    if((ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal, DEAL_ENTRY) != DEAL_ENTRY_OUT) return;
 
    GlobalVariableSet(GV_LASTCLOSETIME, (double)TimeCurrent());
+
+   long positionId = HistoryDealGetInteger(trans.deal, DEAL_POSITION_ID);
+   if(positionId > 0)
+      GlobalVariableDel(g_gvPrefix + "_risk_" + IntegerToString(positionId)); // ApplyTrailing()'in sakladigi baslangic-risk kaydini temizle
 }
 
 //+------------------------------------------------------------------+
@@ -344,9 +360,17 @@ void CancelOppositePending(const ENUM_POSITION_TYPE posType)
 }
 
 //+------------------------------------------------------------------+
-//| Pozisyon InpTrailStartPoints kadar kardaysa, SL'i fiyatin          |
-//| InpTrailStepPoints gerisinde tutacak sekilde (sadece ileri yonde)  |
-//| gunceller.                                                          |
+//| Trailing, SABIT point yerine pozisyonun KENDI baslangic SL         |
+//| mesafesine ORANTILI calisir (InpTrailStartRiskMult / ...StepRiskMult|
+//| katlari). Bir backtest'te sabit-point trailing (150pt baslat/80pt  |
+//| takip) ile ATR-tabanli SL (orn. 265pt) arasindaki uyumsuzluk,      |
+//| kazananlari SL mesafesinin cok altinda erken kesip kaybedenleri    |
+//| tam SL'e kadar tasiyarak (avg kazanc $1.68 vs avg kayip -$4.28,    |
+//| %67 kazanma oranina ragmen net zarar) hesabi eritmisti. Baslangic  |
+//| SL mesafesi pozisyon ilk acildiginda GV'ye kaydedilir (ilk         |
+//| ApplyTrailing cagrisinda, SL henuz trailing tarafindan degismeden  |
+//| once) ve o pozisyon kapanana kadar SABIT kalir - boylece trailing  |
+//| sonradan ATR degisse bile o islemin KENDI riskiyle olculur.        |
 //+------------------------------------------------------------------+
 void ApplyTrailing(const ulong ticket, const ENUM_POSITION_TYPE type)
 {
@@ -358,13 +382,27 @@ void ApplyTrailing(const ulong ticket, const ENUM_POSITION_TYPE type)
    double point = SymbolInfoDouble(g_symbol, SYMBOL_POINT);
    if(point <= 0.0) return;
 
+   string riskKey = g_gvPrefix + "_risk_" + IntegerToString((long)ticket);
+   double riskPoints;
+   if(GlobalVariableCheck(riskKey))
+      riskPoints = GlobalVariableGet(riskKey);
+   else
+   {
+      riskPoints = (curSL > 0.0) ? MathAbs(openPrice - curSL) / point : (double)InpFixedSLPoints;
+      GlobalVariableSet(riskKey, riskPoints);
+   }
+   if(riskPoints <= 0.0) return;
+
    double price = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(g_symbol, SYMBOL_BID) : SymbolInfoDouble(g_symbol, SYMBOL_ASK);
    double profitPoints = (type == POSITION_TYPE_BUY) ? (price - openPrice) / point : (openPrice - price) / point;
-   if(profitPoints < InpTrailStartPoints) return;
+
+   double startPoints = riskPoints * InpTrailStartRiskMult;
+   double stepPoints   = riskPoints * InpTrailStepRiskMult;
+   if(profitPoints < startPoints) return;
 
    double newSL = (type == POSITION_TYPE_BUY)
-                  ? NormalizeDouble(price - InpTrailStepPoints * point, _Digits)
-                  : NormalizeDouble(price + InpTrailStepPoints * point, _Digits);
+                  ? NormalizeDouble(price - stepPoints * point, _Digits)
+                  : NormalizeDouble(price + stepPoints * point, _Digits);
 
    bool improved = (type == POSITION_TYPE_BUY) ? (newSL > curSL) : (curSL <= 0.0 || newSL < curSL);
    if(!improved) return;

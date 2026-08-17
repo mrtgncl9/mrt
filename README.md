@@ -27,7 +27,7 @@ MetaTrader 5 (MQL5) Expert Advisors:
 - `Experts/Grid_Martingale_EA.mq5` — single-direction grid/martingale EA.
 - `Experts/XAUUSD_Scalper_Basket_EA_v1.2.mq5` — same-direction basket EA with
   balance-tiered lot sizing.
-- `Experts/XAUUSD_Straddle_Breakout_EA_v1.1.mq5` — Buy Stop/Sell Stop
+- `Experts/XAUUSD_Straddle_Breakout_EA_v1.2.mq5` — Buy Stop/Sell Stop
   straddle breakout EA, single position at a time.
 
 ## Installation
@@ -241,7 +241,7 @@ size instead of contradicting it.
 
 ## XAUUSD Straddle Breakout EA
 
-`Experts/XAUUSD_Straddle_Breakout_EA_v1.1.mq5` — reverse-engineered from
+`Experts/XAUUSD_Straddle_Breakout_EA_v1.2.mq5` — reverse-engineered from
 a user-supplied video of a bot ("StraddleGap") that grew a demo account
 from ~$680 to ~$1930 over about 28 hours. Unlike the basket EA above,
 this one holds **one small fixed-lot position at a time**: while flat,
@@ -260,19 +260,38 @@ straddle doesn't go stale far from the market. After a position closes,
 the SL distance changing from trade to trade, consistent with a
 volatility-based stop rather than a constant point value.
 `InpUseTrailing` (default on) lets winners run by trailing the stop
-once a position is `InpTrailStartPoints` in profit.
+once a position is in profit by `InpTrailStartRiskMult` × that
+position's own initial SL distance, then keeps the stop
+`InpTrailStepRiskMult` × that same distance behind price — scaled to
+each trade's own risk rather than a fixed point value (see the v1.2 fix
+below for why).
 
 **This is a separate EA from the basket EA and has its own version
-sequence** (v1.0, v1.1, ...) — don't confuse the two when both are
+sequence** (v1.0, v1.1, v1.2, ...) — don't confuse the two when both are
 present. Because it only ever holds one position, it does **not**
 require a hedging account (unlike the basket EA).
 
-**Important caveat: the exact gap distance, SL multiplier, and trailing
-parameters from the source video could not be read precisely** (the
-video only showed them at a few blurry moments) — the defaults here
-(`InpGapPoints=150`, `InpATRMultiplier=2.0`, `InpTrailStartPoints=150`,
-`InpTrailStepPoints=80`) are reasonable starting estimates, not a
-verified reproduction of the video's exact behavior. Calibrate them in
-the Strategy Tester against real tick data before trusting any
-performance number, and treat the video's ~180% account growth as
-anecdotal, not a result this configuration is proven to reproduce.
+**Important caveat: the exact gap distance and SL multiplier from the
+source video could not be read precisely** (the video only showed them
+at a few blurry moments) — `InpGapPoints=150` and `InpATRMultiplier=2.0`
+are reasonable starting estimates, not a verified reproduction of the
+video's exact behavior. Calibrate them in the Strategy Tester against
+real tick data before trusting any performance number, and treat the
+video's ~180% account growth as anecdotal, not a result this
+configuration is proven to reproduce.
+
+### v1.2: fixed a trailing/SL mismatch found by an actual backtest
+
+A user-supplied backtest (GOLD, 2026.08.12, $200 start) lost 74.3% of
+the account (net -$148.59) despite a 67.38% win rate. The cause: v1.1
+trailed with fixed point values (`InpTrailStartPoints=150`,
+`InpTrailStepPoints=80`) that were disconnected from the ATR-based SL
+distance actually used on each trade (e.g. 265 points that day) —
+winners got trailed out far short of that distance while losers rode
+it all the way down, so average loss (-$4.28) ran ~2.5× average win
+(+$1.68) even with most trades won. v1.2 replaces the fixed-point
+inputs with `InpTrailStartRiskMult`/`InpTrailStepRiskMult`, multiples
+of each position's *own* initial SL distance (captured once at open
+and held fixed for that trade's lifetime), so trailing always scales
+to the risk actually taken on that specific trade instead of a
+constant that can drift out of proportion to it.
